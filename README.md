@@ -80,6 +80,8 @@ All config is loaded from `.env` (see `.env.example` for the full list).
 | `OPENAI_API_KEY` | Legacy alias for `LLM_API_KEY` | — |
 | `OPENAI_MODEL` | Legacy alias for `LLM_MODEL` | — |
 | `DIGEST_HOUR_UTC`, `DIGEST_MINUTE_UTC` | When the daily digest fires | `9`, `0` |
+| `DIGEST_INTERVAL_HOURS` | If >0, run digest every N hours instead of daily; window becomes N hours too | `0` (daily) |
+| `DIGEST_ONLY` | If `true`, skip per-post Telegram sends; posts are buffered into the DB and surfaced only via the digest | `false` |
 | `DB_PATH` | Override the SQLite location | `<project>/aggregator.db` |
 
 ### Keyword filter
@@ -98,8 +100,13 @@ A post passes the filter if its lowercased text contains any keyword. Editing ke
 
 Launch with `streamlit run dashboard.py` and open the URL it prints.
 
+### 📥 Review queue
+- Live list of posts the bot is holding for human review (`status IN ('review','digest')`).
+- Each row has **✅ Approve** and **❌ Discard** buttons. Approvals move the post to `approved`; the bot's `process_review_actions` job picks it up within ~30 seconds and forwards it to the output channel.
+- In Telegram, the same choice is available as inline buttons under each queued message — tap to approve/discard, the bot forwards inline.
+
 ### 📰 Digest
-- Filter `posted_log` by date range, source, status (sent / review / discarded / digest).
+- Filter `posted_log` by date range, source, status (sent / review / discarded / digest / buffered).
 - Export the current view to CSV.
 - Click **Generate digest now** to enqueue an ad-hoc digest over a custom window. The bot picks it up within ~60 seconds.
 - See the status of recent digest jobs.
@@ -122,7 +129,7 @@ Launch with `streamlit run dashboard.py` and open the URL it prints.
 
 At `DIGEST_HOUR_UTC`:`DIGEST_MINUTE_UTC` every day the bot:
 
-1. Pulls `posted_log` rows from the last 24 hours where `status IN ('sent','review')`.
+1. Pulls `posted_log` rows from the last N hours where `status IN ('sent','review','buffered')`.
 2. If fewer than 3 posts are found, skips silently (cheap).
 3. Otherwise asks OpenAI to summarise them, with a system prompt that asks for grouped, factual, under-700-word output.
 4. Sends the summary through the standard `send_post` flow — so if `MANUAL_REVIEW=true`, it lands in the review queue first and is logged with `status='digest'` once approved.
@@ -139,9 +146,9 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-69 tests, ~3s. Coverage focuses on the highest-leverage surfaces:
+80 tests, ~3s. Coverage focuses on the highest-leverage surfaces:
 
-- `tests/test_db.py` — schema, WAL mode, seed behaviour, source/feed CRUD, `is_new` dedup, `posted_log` filters, `posts_for_window`, `digest_jobs` lifecycle, cross-connection visibility.
+- `tests/test_db.py` — schema, WAL mode, seed behaviour, source/feed CRUD, `is_new` dedup, `posted_log` filters, `posts_for_window` (incl. `buffered` status), `digest_jobs` lifecycle, review-queue helpers (`list_pending_review`, `mark_review_action`), cross-connection visibility.
 - `tests/test_bot_helpers.py` — `make_id`, `is_relevant`, `format_post` / `format_digest` (including truncation), `extract_post_id`.
 - `tests/test_config.py` — env parsing, defaults, `require_secrets` happy / error paths, LLM provider selection (`openai` / `minimax` / `glm`), legacy `OPENAI_*` fallback behaviour.
 

@@ -308,10 +308,49 @@ def posts_for_window(start_iso: str, end_iso: str) -> list[sqlite3.Row]:
         return conn.execute(
             "SELECT * FROM posted_log "
             "WHERE sent_at >= ? AND sent_at < ? "
-            "AND status IN ('sent','review') "
+            "AND status IN ('sent','review','buffered') "
             "ORDER BY sent_at ASC",
             (start_iso, end_iso),
         ).fetchall()
+
+
+def list_pending_review() -> list[sqlite3.Row]:
+    """
+    Posts awaiting human review — used by the dashboard's Review queue page.
+
+    Includes both 'review' (queued Telegram posts) and 'digest' (queued
+    daily digests), since both can be approved/discarded.
+    """
+    with connect() as conn:
+        return conn.execute(
+            "SELECT post_id, source, text, sent_at, status, digest_of "
+            "FROM posted_log "
+            "WHERE status IN ('review', 'digest') "
+            "ORDER BY sent_at DESC LIMIT 100"
+        ).fetchall()
+
+
+def mark_review_action(post_id: str, action: str) -> bool:
+    """
+    Transition a 'review' or 'digest' post to 'approved' or 'discarded'.
+
+    Used by both the Telegram inline-button handler (which then forwards
+    inline) and the dashboard queue page (which lets the bot's polling
+    job do the forward). Returns True if a row was changed, False if the
+    post is unknown or already actioned. Idempotent.
+    """
+    if action not in ("approve", "discard"):
+        raise ValueError(
+            f"action must be 'approve' or 'discard', got {action!r}"
+        )
+    new_status = "approved" if action == "approve" else "discarded"
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE posted_log SET status = ? "
+            "WHERE post_id = ? AND status IN ('review', 'digest')",
+            (new_status, post_id),
+        )
+        return cur.rowcount > 0
 
 
 def distinct_sources() -> list[str]:

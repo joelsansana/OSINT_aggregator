@@ -55,6 +55,7 @@ class TelegramConfig:
     review_channel: str
     poll_interval: int
     messages_per_channel: int
+    digest_only: bool
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,7 @@ _LLM_PROVIDERS: dict[str, tuple[str, str]] = {
 class DigestConfig:
     hour_utc: int
     minute_utc: int
+    interval_hours: int  # 0 → daily cron at hour_utc:minute_utc; >0 → every N hours
 
 
 def telegram() -> TelegramConfig:
@@ -101,6 +103,7 @@ def telegram() -> TelegramConfig:
         review_channel=os.getenv("REVIEW_CHANNEL", ""),
         poll_interval=_int("TELEGRAM_POLL_INTERVAL", 60),
         messages_per_channel=_int("MESSAGES_PER_CHANNEL", 5),
+        digest_only=_bool("DIGEST_ONLY", False),
     )
 
 
@@ -144,6 +147,7 @@ def digest() -> DigestConfig:
     return DigestConfig(
         hour_utc=_int("DIGEST_HOUR_UTC", 9),
         minute_utc=_int("DIGEST_MINUTE_UTC", 0),
+        interval_hours=_int("DIGEST_INTERVAL_HOURS", 0),
     )
 
 

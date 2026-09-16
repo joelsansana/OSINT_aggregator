@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_init_db_creates_all_tables(fresh_db):
     _db_path, db = fresh_db
@@ -279,3 +281,99 @@ def test_concurrent_connections_share_state(seeded_db):
             "SELECT post_id FROM posted_log WHERE post_id = ?", ("concurrent",)
         ).fetchone()
     assert row["post_id"] == "concurrent"
+
+
+# ── review-queue helpers ─────────────────────────────────────────────
+
+def _status(db, post_id: str) -> str | None:
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT status FROM posted_log WHERE post_id = ?", (post_id,)
+        ).fetchone()
+    return row["status"] if row else None
+
+
+def test_list_pending_review_returns_review_and_digest(seeded_db):
+    _db_path, db = seeded_db
+    rows = db.list_pending_review()
+    ids = {r["post_id"] for r in rows}
+    # seeded_db has p2=review and p4=digest; p1=sent and p3=discarded
+    assert ids == {"p2", "p4"}
+
+
+def test_list_pending_review_newest_first(seeded_db):
+    _db_path, db = seeded_db
+    rows = db.list_pending_review()
+    sent_at = [r["sent_at"] for r in rows]
+    assert sent_at == sorted(sent_at, reverse=True)
+
+
+def test_mark_review_action_approves_review_post(seeded_db):
+    _db_path, db = seeded_db
+    assert db.mark_review_action("p2", "approve") is True
+    assert _status(db, "p2") == "approved"
+
+
+def test_mark_review_action_discards_digest_post(seeded_db):
+    _db_path, db = seeded_db
+    assert db.mark_review_action("p4", "discard") is True
+    assert _status(db, "p4") == "discarded"
+
+
+def test_mark_review_action_noop_when_already_actioned(seeded_db):
+    _db_path, db = seeded_db
+    # p1 is already 'sent', p3 is already 'discarded' — neither is in
+    # ('review','digest'), so neither action should change anything.
+    assert db.mark_review_action("p1", "approve") is False
+    assert db.mark_review_action("p3", "discard") is False
+    assert _status(db, "p1") == "sent"
+    assert _status(db, "p3") == "discarded"
+
+
+def test_mark_review_action_returns_false_for_unknown_post(seeded_db):
+    _db_path, db = seeded_db
+    assert db.mark_review_action("does-not-exist", "approve") is False
+
+
+def test_mark_review_action_rejects_invalid_action(seeded_db):
+    _db_path, db = seeded_db
+    with pytest.raises(ValueError, match="approve.*discard"):
+        db.mark_review_action("p2", "telegram-react")
+
+
+def test_mark_review_action_is_idempotent(seeded_db):
+    _db_path, db = seeded_db
+    # Approve once → succeeds, status moves to 'approved' (no longer in
+    # the eligible set). Approve again → no-op, returns False.
+    assert db.mark_review_action("p2", "approve") is True
+    assert db.mark_review_action("p2", "approve") is False
+    assert _status(db, "p2") == "approved"
+
+
+# ── posts_for_window status coverage ────────────────────────────────
+
+def test_posts_for_window_includes_buffered(seeded_db):
+    """Digest should pick up digest-only buffered posts, not just sent/review."""
+    _db_path, db = seeded_db
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO posted_log (post_id, source, text, sent_at, status) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("buf1", "@x", "buffered post", "2026-09-16T12:00:00+00:00", "buffered"),
+        )
+        conn.commit()
+    rows = db.posts_for_window(
+        "2026-09-16T00:00:00+00:00", "2026-09-17T00:00:00+00:00"
+    )
+    ids = {r["post_id"] for r in rows}
+    assert "buf1" in ids
+
+
+def test_posts_for_window_excludes_discarded(seeded_db):
+    """Discarded posts should never feed into a digest."""
+    _db_path, db = seeded_db
+    rows = db.posts_for_window(
+        "2026-09-16T00:00:00+00:00", "2026-09-17T00:00:00+00:00"
+    )
+    ids = {r["post_id"] for r in rows}
+    assert "p3" not in ids  # p3 was seeded as 'discarded'

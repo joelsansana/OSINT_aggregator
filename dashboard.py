@@ -43,6 +43,51 @@ def _ensure_db() -> None:
 _ensure_db()
 
 
+def page_review_queue() -> None:
+    st.header("📥 Review queue")
+    st.caption(
+        "Posts waiting for human review. Approvals are forwarded to the "
+        "output channel automatically within ~30 seconds by the bot."
+    )
+
+    rows = db.list_pending_review()
+    if not rows:
+        st.success("Review queue is empty. ✅")
+        return
+
+    st.metric("Pending", len(rows))
+
+    for row in rows:
+        with st.container(border=True):
+            cols = st.columns([3, 1, 1])
+            with cols[0]:
+                is_digest = bool(row["digest_of"])
+                icon = "📰" if is_digest else "📡"
+                kind_label = "Daily Digest" if is_digest else row["source"]
+                ts = row["sent_at"][:16].replace("T", " ")
+                st.markdown(f"{icon} **{kind_label}** · _{ts} UTC_")
+                preview = row["text"]
+                if len(preview) > 400:
+                    preview = preview[:400].rstrip() + "…"
+                st.text(preview)
+            with cols[1]:
+                if st.button(
+                    "✅ Approve",
+                    key=f"approve_{row['post_id']}",
+                    width="stretch",
+                ):
+                    db.mark_review_action(row["post_id"], "approve")
+                    st.toast("Approved — forwarding shortly", icon="✅")
+            with cols[2]:
+                if st.button(
+                    "❌ Discard",
+                    key=f"discard_{row['post_id']}",
+                    width="stretch",
+                ):
+                    db.mark_review_action(row["post_id"], "discard")
+                    st.toast("Discarded", icon="🗑")
+
+
 def page_digest() -> None:
     st.header("📰 Digest")
     st.caption("All posts the bot has handled — sent, queued for review, discarded, or generated as a digest.")
@@ -63,7 +108,7 @@ def page_digest() -> None:
     with col3:
         source_filter = st.text_input("Source contains…", value="")
     with col4:
-        status_options = ["sent", "review", "discarded", "digest"]
+        status_options = ["sent", "review", "discarded", "digest", "buffered"]
         status = st.selectbox("Status", ["(all)"] + status_options)
 
     since_iso = f"{since_date.isoformat()}T00:00:00+00:00"
@@ -94,7 +139,7 @@ def page_digest() -> None:
                 data=csv_buf.getvalue(),
                 file_name=f"osint_digest_{since_date}_{until_date}.csv",
                 mime="text/csv",
-                use_container_width=True,
+                width="stretch",
             )
 
     st.divider()
@@ -143,6 +188,7 @@ def page_digest() -> None:
             "review": "🟡 review",
             "discarded": "🔴 discarded",
             "digest": "📰 digest",
+            "buffered": "📦 buffered",
         }.get(r["status"], r["status"])
         with st.container(border=True):
             meta = f"**{badge}** · `{r['source']}` · {r['sent_at']}"
@@ -270,6 +316,7 @@ def page_stats() -> None:
 
 
 PAGES = {
+    "📥 Review queue": page_review_queue,
     "📰 Digest": page_digest,
     "📡 Telegram sources": page_telegram_sources,
     "🗞 RSS feeds": page_rss_feeds,

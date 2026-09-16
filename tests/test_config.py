@@ -13,11 +13,11 @@ def _reload_config(monkeypatch, env: dict):
     monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **kw: None)
     for k in (
         "API_ID", "API_HASH", "OUTPUT_CHANNEL", "MANUAL_REVIEW",
-        "REVIEW_CHANNEL", "SESSION_NAME",
+        "REVIEW_CHANNEL", "SESSION_NAME", "DIGEST_ONLY",
         "OPENAI_API_KEY", "OPENAI_MODEL",
         "LLM_PROVIDER", "LLM_API_KEY", "LLM_MODEL", "LLM_BASE_URL",
         "TELEGRAM_POLL_INTERVAL", "RSS_POLL_INTERVAL", "MESSAGES_PER_CHANNEL",
-        "DIGEST_HOUR_UTC", "DIGEST_MINUTE_UTC", "DB_PATH",
+        "DIGEST_HOUR_UTC", "DIGEST_MINUTE_UTC", "DIGEST_INTERVAL_HOURS", "DB_PATH",
     ):
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
@@ -37,6 +37,7 @@ def test_telegram_config_defaults(monkeypatch):
     assert cfg.review_channel == ""
     assert cfg.poll_interval == 60
     assert cfg.messages_per_channel == 5
+    assert cfg.digest_only is False
 
 
 def test_telegram_config_parses_env(monkeypatch):
@@ -48,6 +49,7 @@ def test_telegram_config_parses_env(monkeypatch):
         "REVIEW_CHANNEL": "@review",
         "TELEGRAM_POLL_INTERVAL": "30",
         "MESSAGES_PER_CHANNEL": "10",
+        "DIGEST_ONLY": "true",
     }).telegram()
     assert cfg.api_id == 12345
     assert cfg.api_hash == "hash"
@@ -56,6 +58,7 @@ def test_telegram_config_parses_env(monkeypatch):
     assert cfg.review_channel == "@review"
     assert cfg.poll_interval == 30
     assert cfg.messages_per_channel == 10
+    assert cfg.digest_only is True
 
 
 def test_manual_review_accepts_truthy_strings(monkeypatch):
@@ -176,6 +179,7 @@ def test_digest_config_defaults(monkeypatch):
     cfg = _reload_config(monkeypatch, {}).digest()
     assert cfg.hour_utc == 9
     assert cfg.minute_utc == 0
+    assert cfg.interval_hours == 0
 
 
 def test_digest_config_parses_env(monkeypatch):
@@ -185,6 +189,16 @@ def test_digest_config_parses_env(monkeypatch):
     }).digest()
     assert cfg.hour_utc == 7
     assert cfg.minute_utc == 30
+
+
+def test_digest_config_interval_hours(monkeypatch):
+    cfg = _reload_config(monkeypatch, {
+        "DIGEST_INTERVAL_HOURS": "1",
+    }).digest()
+    assert cfg.interval_hours == 1
+    # hour_utc / minute_utc still default — they're only used in cron mode.
+    assert cfg.hour_utc == 9
+    assert cfg.minute_utc == 0
 
 
 def test_require_secrets_passes_when_set(monkeypatch):

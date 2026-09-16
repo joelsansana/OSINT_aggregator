@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 import feedparser
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from openai import OpenAI
-from telethon import TelegramClient, events
+from telethon import Button, TelegramClient, events
 from telethon.errors import FloodWaitError
 
 import config
@@ -149,29 +149,53 @@ async def send_post(
         effective_digest_of = None
 
     post_id = make_id(formatted)
+    digest_only = config.telegram().digest_only
 
-    try:
-        if config.telegram().manual_review:
-            review_text = (
-                f"📥 REVIEW QUEUE\n"
-                f"{POST_ID_MARKER}{post_id}\n"
-                f"Source: {source}\n"
-                f"──────────────\n"
-                f"{formatted}\n\n"
-                f"Reply ✅ to approve and post, or ❌ to discard."
-            )
-            await client.send_message(config.telegram().review_channel, review_text)
-            log.info("Queued for review | source=%s | kind=%s", source, kind)
-        else:
-            await client.send_message(config.telegram().output_channel, formatted)
-            log.info("Posted | source=%s | kind=%s | %s...", source, kind, text[:60])
-    except FloodWaitError as e:
-        log.warning("Flood wait: sleeping %ss", e.seconds)
-        await asyncio.sleep(e.seconds)
-        return None
-    except Exception:
-        log.exception("send_post failed | source=%s | kind=%s", source, kind)
-        return None
+    # In digest-only mode, individual posts are buffered for the digest
+    # but never sent to Telegram. The digest itself still goes through
+    # the normal flow below so the user keeps getting the summary.
+    skip_telegram_send = digest_only and kind != "digest"
+
+    if skip_telegram_send:
+        status = "buffered"
+        log.info(
+            "Digest-only: buffered post without sending | source=%s",
+            source,
+        )
+    else:
+        try:
+            if config.telegram().manual_review:
+                review_text = (
+                    f"📥 REVIEW QUEUE\n"
+                    f"{POST_ID_MARKER}{post_id}\n"
+                    f"Source: {source}\n"
+                    f"──────────────\n"
+                    f"{formatted}\n\n"
+                    f"Tap ✅ to approve or ❌ to discard "
+                    f"(reply ✅/❌ still works)."
+                )
+                buttons = [
+                    [
+                        Button.inline("✅ Approve", data=f"approve:{post_id}".encode()),
+                        Button.inline("❌ Discard", data=f"discard:{post_id}".encode()),
+                    ],
+                ]
+                await client.send_message(
+                    config.telegram().review_channel,
+                    review_text,
+                    buttons=buttons,
+                )
+                log.info("Queued for review | source=%s | kind=%s", source, kind)
+            else:
+                await client.send_message(config.telegram().output_channel, formatted)
+                log.info("Posted | source=%s | kind=%s | %s...", source, kind, text[:60])
+        except FloodWaitError as e:
+            log.warning("Flood wait: sleeping %ss", e.seconds)
+            await asyncio.sleep(e.seconds)
+            return None
+        except Exception:
+            log.exception("send_post failed | source=%s | kind=%s", source, kind)
+            return None
 
     try:
         db.log_post(
@@ -201,6 +225,53 @@ def register_review_handler(client: TelegramClient) -> None:
     of the formatted body).
     """
     out_channel = config.telegram().output_channel
+
+    # Inline-button handler (callback data: "approve:<post_id>" /
+    # "discard:<post_id>"). Posts are forwarded inline so the user sees
+    # the result in the output channel immediately on tap.
+    @client.on(events.CallbackQuery(data=re.compile(rb"^(approve|discard):([a-f0-9]{32})$")))
+    async def handle_review_button(event):
+        action, post_id = event.data.decode().split(":", 1)
+        if action == "approve":
+            try:
+                with db.connect() as conn:
+                    row = conn.execute(
+                        "SELECT text FROM posted_log "
+                        "WHERE post_id = ? AND status IN ('review', 'digest') "
+                        "ORDER BY id DESC LIMIT 1",
+                        (post_id,),
+                    ).fetchone()
+                if not row:
+                    await event.answer("Already actioned.", alert=True)
+                    return
+                await client.send_message(out_channel, row["text"])
+                with db.connect() as conn:
+                    conn.execute(
+                        "UPDATE posted_log SET status = 'sent' "
+                        "WHERE post_id = ? AND status IN ('review', 'digest')",
+                        (post_id,),
+                    )
+                await event.answer("✅ Posted")
+                log.info("Review approved (button) | post_id=%s", post_id)
+            except Exception:
+                log.exception("Button approve failed | post_id=%s", post_id)
+                await event.answer("⚠️ Failed", alert=True)
+        else:
+            try:
+                with db.connect() as conn:
+                    cur = conn.execute(
+                        "UPDATE posted_log SET status = 'discarded' "
+                        "WHERE post_id = ? AND status IN ('review', 'digest')",
+                        (post_id,),
+                    )
+                if cur.rowcount == 0:
+                    await event.answer("Already actioned.", alert=True)
+                    return
+                await event.answer("🗑 Discarded")
+                log.info("Review discarded (button) | post_id=%s", post_id)
+            except Exception:
+                log.exception("Button discard failed | post_id=%s", post_id)
+                await event.answer("⚠️ Failed", alert=True)
 
     @client.on(events.NewMessage(chats=config.telegram().review_channel))
     async def handle_review(event):
@@ -376,13 +447,16 @@ def _summarise_sync(posts: list, day: str) -> str:
 
 async def generate_digest(client: TelegramClient, *, day: str | None = None) -> bool:
     """
-    Build a digest of the last 24h of posted_log entries and send it
-    through the standard send_post flow (so MANUAL_REVIEW is respected).
+    Build a digest of recent posted_log entries and send it through the
+    standard send_post flow (so MANUAL_REVIEW is respected).
 
+    The window is DIGEST_INTERVAL_HOURS when set, otherwise 24h.
     Returns True if a digest was produced, False if skipped.
     """
+    digest_cfg = config.digest()
+    window_hours = digest_cfg.interval_hours if digest_cfg.interval_hours > 0 else 24
     end = utc_now()
-    start = end - timedelta(hours=24)
+    start = end - timedelta(hours=window_hours)
     target_day = day or end.date().isoformat()
     posts = db.posts_for_window(start.isoformat(), end.isoformat())
 
@@ -478,6 +552,49 @@ async def process_pending_digest_jobs(client: TelegramClient) -> None:
 
 
 # ─────────────────────────────────────────────
+# REVIEW-ACTION FORWARDING (polling for dashboard approvals)
+# ─────────────────────────────────────────────
+
+async def process_review_actions(client: TelegramClient) -> None:
+    """
+    Forward posts the dashboard marked 'approved' to the OUTPUT_CHANNEL,
+    then mark them 'sent'. Idempotent: the 'sending' claim state means
+    only one poll cycle processes a given post.
+    """
+    cfg = config.telegram()
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT post_id, text FROM posted_log "
+            "WHERE status = 'approved' ORDER BY sent_at LIMIT 20"
+        ).fetchall()
+    for row in rows:
+        post_id = row["post_id"]
+        with db.connect() as conn:
+            cur = conn.execute(
+                "UPDATE posted_log SET status = 'sending' "
+                "WHERE post_id = ? AND status = 'approved'",
+                (post_id,),
+            )
+            if cur.rowcount == 0:
+                continue
+        try:
+            await client.send_message(cfg.output_channel, row["text"])
+            with db.connect() as conn:
+                conn.execute(
+                    "UPDATE posted_log SET status = 'sent' WHERE post_id = ?",
+                    (post_id,),
+                )
+            log.info("Dashboard-approved post forwarded | post_id=%s", post_id)
+        except Exception:
+            with db.connect() as conn:
+                conn.execute(
+                    "UPDATE posted_log SET status = 'approved' WHERE post_id = ?",
+                    (post_id,),
+                )
+            log.exception("Forward failed | post_id=%s", post_id)
+
+
+# ─────────────────────────────────────────────
 # SCHEDULER
 # ─────────────────────────────────────────────
 
@@ -523,6 +640,14 @@ async def main():
         args=[client],
         next_run_time=utc_now(),
     )
+    if config.telegram().manual_review:
+        scheduler.add_job(
+            process_review_actions,
+            "interval",
+            seconds=30,
+            args=[client],
+            next_run_time=utc_now(),
+        )
     scheduler.add_job(
         process_pending_digest_jobs,
         "interval",
@@ -530,21 +655,33 @@ async def main():
         args=[client],
         next_run_time=utc_now() + timedelta(minutes=1),
     )
-    scheduler.add_job(
-        daily_digest_job,
-        "cron",
-        hour=config.digest().hour_utc,
-        minute=config.digest().minute_utc,
-        args=[client],
-    )
+    if config.digest().interval_hours > 0:
+        scheduler.add_job(
+            daily_digest_job,
+            "interval",
+            hours=config.digest().interval_hours,
+            args=[client],
+            next_run_time=utc_now(),
+        )
+    else:
+        scheduler.add_job(
+            daily_digest_job,
+            "cron",
+            hour=config.digest().hour_utc,
+            minute=config.digest().minute_utc,
+            args=[client],
+        )
 
     scheduler.start()
     log.info(
-        "Scheduler running | TG=%ds | RSS=%ds | digest=%02d:%02d UTC",
+        "Scheduler running | TG=%ds | RSS=%ds | digest=%s",
         config.telegram().poll_interval,
         config.rss().poll_interval,
-        config.digest().hour_utc,
-        config.digest().minute_utc,
+        (
+            f"every {config.digest().interval_hours}h"
+            if config.digest().interval_hours > 0
+            else f"{config.digest().hour_utc:02d}:{config.digest().minute_utc:02d} UTC"
+        ),
     )
 
     try:
