@@ -340,15 +340,18 @@ DIGEST_SYSTEM_PROMPT = (
 )
 
 
-def _build_openai_client() -> OpenAI:
-    cfg = config.openai_cfg()
+def _build_llm_client() -> OpenAI:
+    cfg = config.llm()
     if not cfg.api_key:
-        raise RuntimeError("OPENAI_API_KEY not set in .env")
-    return OpenAI(api_key=cfg.api_key)
+        raise RuntimeError(
+            f"API key for LLM provider {cfg.provider!r} not set in .env"
+        )
+    return OpenAI(api_key=cfg.api_key, base_url=cfg.base_url)
 
 
 def _summarise_sync(posts: list, day: str) -> str:
-    client = _build_openai_client()
+    cfg = config.llm()
+    client = _build_llm_client()
     bullet_lines = []
     for p in posts:
         snippet = (p["text"] or "").strip()
@@ -361,7 +364,7 @@ def _summarise_sync(posts: list, day: str) -> str:
         + "\n".join(bullet_lines)
     )
     response = client.chat.completions.create(
-        model=config.openai_cfg().model,
+        model=cfg.model,
         messages=[
             {"role": "system", "content": DIGEST_SYSTEM_PROMPT},
             {"role": "user", "content": user_msg},
@@ -392,10 +395,10 @@ async def generate_digest(client: TelegramClient, *, day: str | None = None) -> 
     try:
         summary = await asyncio.to_thread(_summarise_sync, posts, target_day)
     except Exception:
-        log.exception("OpenAI digest call failed")
+        log.exception("LLM digest call failed")
         return False
     if not summary.strip():
-        log.warning("OpenAI returned empty digest")
+        log.warning("LLM returned empty digest")
         return False
 
     await send_post(
@@ -458,7 +461,7 @@ async def process_pending_digest_jobs(client: TelegramClient) -> None:
             conn.execute(
                 "UPDATE digest_jobs SET status = 'failed', finished_at = ?, "
                 "error = ? WHERE id = ?",
-                (utc_now().isoformat(), "OpenAI returned empty summary", job["id"]),
+                (utc_now().isoformat(), "LLM returned empty summary", job["id"]),
             )
         return
 

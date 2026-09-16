@@ -8,10 +8,14 @@ import pytest
 
 
 def _reload_config(monkeypatch, env: dict):
-    """Reload config.py with a controlled environment."""
+    """Reload config.py with a controlled environment, ignoring any .env file."""
+    import dotenv
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **kw: None)
     for k in (
         "API_ID", "API_HASH", "OUTPUT_CHANNEL", "MANUAL_REVIEW",
-        "REVIEW_CHANNEL", "SESSION_NAME", "OPENAI_API_KEY", "OPENAI_MODEL",
+        "REVIEW_CHANNEL", "SESSION_NAME",
+        "OPENAI_API_KEY", "OPENAI_MODEL",
+        "LLM_PROVIDER", "LLM_API_KEY", "LLM_MODEL", "LLM_BASE_URL",
         "TELEGRAM_POLL_INTERVAL", "RSS_POLL_INTERVAL", "MESSAGES_PER_CHANNEL",
         "DIGEST_HOUR_UTC", "DIGEST_MINUTE_UTC", "DB_PATH",
     ):
@@ -71,8 +75,10 @@ def test_rss_config_parses_env(monkeypatch):
 
 def test_openai_config_defaults(monkeypatch):
     cfg = _reload_config(monkeypatch, {}).openai_cfg()
+    assert cfg.provider == "openai"
     assert cfg.api_key == ""
     assert cfg.model == "gpt-4o-mini"
+    assert cfg.base_url == "https://api.openai.com/v1"
 
 
 def test_openai_config_parses_env(monkeypatch):
@@ -82,6 +88,88 @@ def test_openai_config_parses_env(monkeypatch):
     }).openai_cfg()
     assert cfg.api_key == "sk-test"
     assert cfg.model == "gpt-4o"
+
+
+def test_llm_defaults_to_openai(monkeypatch):
+    cfg = _reload_config(monkeypatch, {}).llm()
+    assert cfg.provider == "openai"
+    assert cfg.model == "gpt-4o-mini"
+    assert cfg.base_url == "https://api.openai.com/v1"
+
+
+def test_llm_minimax_preset(monkeypatch):
+    cfg = _reload_config(monkeypatch, {
+        "LLM_PROVIDER": "minimax",
+        "LLM_API_KEY": "minimax-key",
+    }).llm()
+    assert cfg.provider == "minimax"
+    assert cfg.api_key == "minimax-key"
+    assert cfg.model == "MiniMax-M3"
+    assert cfg.base_url == "https://api.minimax.io/v1"
+
+
+def test_llm_glm_preset(monkeypatch):
+    cfg = _reload_config(monkeypatch, {
+        "LLM_PROVIDER": "glm",
+        "LLM_API_KEY": "glm-key",
+    }).llm()
+    assert cfg.provider == "glm"
+    assert cfg.api_key == "glm-key"
+    assert cfg.model == "glm-4-flash"
+    assert cfg.base_url == "https://open.bigmodel.cn/api/paas/v4/"
+
+
+def test_llm_unknown_provider_raises(monkeypatch):
+    cfg = _reload_config(monkeypatch, {"LLM_PROVIDER": "anthropic"})
+    with pytest.raises(RuntimeError, match="Unknown LLM_PROVIDER"):
+        cfg.llm()
+
+
+def test_llm_explicit_overrides(monkeypatch):
+    cfg = _reload_config(monkeypatch, {
+        "LLM_PROVIDER": "openai",
+        "LLM_BASE_URL": "https://my-proxy.example.com/v1",
+        "LLM_MODEL": "gpt-4o",
+        "LLM_API_KEY": "sk-x",
+    }).llm()
+    assert cfg.base_url == "https://my-proxy.example.com/v1"
+    assert cfg.model == "gpt-4o"
+
+
+def test_llm_falls_back_to_legacy_env(monkeypatch):
+    cfg = _reload_config(monkeypatch, {
+        "OPENAI_API_KEY": "sk-legacy",
+        "OPENAI_MODEL": "gpt-4",
+    }).llm()
+    assert cfg.api_key == "sk-legacy"
+    assert cfg.model == "gpt-4"
+
+
+def test_llm_new_env_wins_over_legacy(monkeypatch):
+    cfg = _reload_config(monkeypatch, {
+        "LLM_API_KEY": "sk-new",
+        "OPENAI_API_KEY": "sk-legacy",
+    }).llm()
+    assert cfg.api_key == "sk-new"
+
+
+def test_require_llm_raises_when_missing(monkeypatch):
+    cfg = _reload_config(monkeypatch, {})
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+        cfg.require_llm()
+
+
+def test_require_llm_passes_when_set_via_legacy(monkeypatch):
+    cfg = _reload_config(monkeypatch, {"OPENAI_API_KEY": "sk-x"})
+    cfg.require_llm()
+
+
+def test_require_llm_passes_when_set_via_new(monkeypatch):
+    cfg = _reload_config(monkeypatch, {
+        "LLM_PROVIDER": "minimax",
+        "LLM_API_KEY": "minimax-key",
+    })
+    cfg.require_llm()
 
 
 def test_digest_config_defaults(monkeypatch):

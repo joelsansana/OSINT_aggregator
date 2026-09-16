@@ -106,8 +106,11 @@ def page_digest() -> None:
         st.write("")
         st.write("")
         if st.button("🚀 Generate digest", type="primary"):
-            if not config.openai_cfg().api_key:
-                st.error("OPENAI_API_KEY is not set in .env — digests require it.")
+            if not config.llm().api_key:
+                st.error(
+                    f"API key for LLM provider {config.llm().provider!r} "
+                    "is not set in .env — digests require it."
+                )
             else:
                 end = datetime.now(timezone.utc)
                 start = end - timedelta(hours=int(hours))

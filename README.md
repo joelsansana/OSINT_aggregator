@@ -73,8 +73,12 @@ All config is loaded from `.env` (see `.env.example` for the full list).
 | `TELEGRAM_POLL_INTERVAL` | Seconds between source polls | `60` |
 | `RSS_POLL_INTERVAL` | Seconds between RSS polls | `300` |
 | `MESSAGES_PER_CHANNEL` | Recent messages fetched per channel per poll | `5` |
-| `OPENAI_API_KEY` | Required for daily digest | required for digests |
-| `OPENAI_MODEL` | LLM for digest generation | `gpt-4o-mini` |
+| `LLM_PROVIDER` | LLM preset: `openai`, `minimax`, or `glm` | `openai` |
+| `LLM_API_KEY` | API key for the chosen provider | required for digests |
+| `LLM_MODEL` | Model name passed to the provider | provider default |
+| `LLM_BASE_URL` | Override the provider's API endpoint | provider default |
+| `OPENAI_API_KEY` | Legacy alias for `LLM_API_KEY` | — |
+| `OPENAI_MODEL` | Legacy alias for `LLM_MODEL` | — |
 | `DIGEST_HOUR_UTC`, `DIGEST_MINUTE_UTC` | When the daily digest fires | `9`, `0` |
 | `DB_PATH` | Override the SQLite location | `<project>/aggregator.db` |
 
@@ -135,11 +139,11 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-59 tests, ~3s. Coverage focuses on the highest-leverage surfaces:
+69 tests, ~3s. Coverage focuses on the highest-leverage surfaces:
 
 - `tests/test_db.py` — schema, WAL mode, seed behaviour, source/feed CRUD, `is_new` dedup, `posted_log` filters, `posts_for_window`, `digest_jobs` lifecycle, cross-connection visibility.
 - `tests/test_bot_helpers.py` — `make_id`, `is_relevant`, `format_post` / `format_digest` (including truncation), `extract_post_id`.
-- `tests/test_config.py` — env parsing, defaults, `require_secrets` happy / error paths.
+- `tests/test_config.py` — env parsing, defaults, `require_secrets` happy / error paths, LLM provider selection (`openai` / `minimax` / `glm`), legacy `OPENAI_*` fallback behaviour.
 
 Streamlit pages and the Telegram network code aren't covered (would need `streamlit.testing` and Telethon mocks).
 

@@ -63,9 +63,26 @@ class RSSConfig:
 
 
 @dataclass(frozen=True)
-class OpenAIConfig:
+class LLMConfig:
+    provider: str
     api_key: str
     model: str
+    base_url: str
+
+
+# Backwards-compatible alias (the config used to be OpenAI-only).
+OpenAIConfig = LLMConfig
+
+
+# Provider presets: name → (default base URL, default model).
+# All three expose OpenAI-compatible Chat Completions endpoints, which the
+# `openai` Python SDK talks to via `base_url=`. Override any field with
+# LLM_BASE_URL / LLM_MODEL / LLM_API_KEY if needed.
+_LLM_PROVIDERS: dict[str, tuple[str, str]] = {
+    "openai":  ("https://api.openai.com/v1",             "gpt-4o-mini"),
+    "minimax": ("https://api.minimax.io/v1",             "MiniMax-M3"),
+    "glm":     ("https://open.bigmodel.cn/api/paas/v4/", "glm-4-flash"),
+}
 
 
 @dataclass(frozen=True)
@@ -93,11 +110,34 @@ def rss() -> RSSConfig:
     )
 
 
-def openai_cfg() -> OpenAIConfig:
-    return OpenAIConfig(
-        api_key=os.getenv("OPENAI_API_KEY", ""),
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+def llm() -> LLMConfig:
+    """
+    LLM provider config for the daily digest.
+
+    `LLM_PROVIDER` selects the provider preset (default: "openai"). Each
+    preset supplies a default base URL and model. Override per-call with
+    LLM_API_KEY, LLM_MODEL, and LLM_BASE_URL. For backwards compatibility,
+    OPENAI_API_KEY and OPENAI_MODEL are still read when the new vars
+    are not set.
+    """
+    provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+    if provider not in _LLM_PROVIDERS:
+        raise RuntimeError(
+            f"Unknown LLM_PROVIDER {provider!r}. "
+            f"Valid options: {', '.join(sorted(_LLM_PROVIDERS))}."
+        )
+    default_url, default_model = _LLM_PROVIDERS[provider]
+    return LLMConfig(
+        provider=provider,
+        api_key=os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY", ""),
+        model=os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or default_model,
+        base_url=os.getenv("LLM_BASE_URL") or default_url,
     )
+
+
+# Backwards-compatible alias.
+def openai_cfg() -> LLMConfig:
+    return llm()
 
 
 def digest() -> DigestConfig:
@@ -116,5 +156,16 @@ def require_secrets() -> None:
     _required("OUTPUT_CHANNEL")
 
 
+def require_llm() -> None:
+    """Call before generating a digest. Raises if no API key is set."""
+    cfg = llm()
+    if not cfg.api_key:
+        raise RuntimeError(
+            f"API key for LLM provider {cfg.provider!r} not set. "
+            "Set LLM_API_KEY (or legacy OPENAI_API_KEY) in .env."
+        )
+
+
+# Backwards-compatible alias.
 def require_openai() -> None:
-    _required("OPENAI_API_KEY")
+    require_llm()
