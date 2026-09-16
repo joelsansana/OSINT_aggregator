@@ -1,0 +1,13 @@
+.env
+*.session
+*.session-journal
+aggregator.db
+aggregator.db-journal
+aggregator.db-wal
+aggregator.db-shm
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.streamlit/secrets.toml

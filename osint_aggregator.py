@@ -1,0 +1,556 @@
+"""
+Telegram OSINT Aggregator Bot
+=============================
+Monitors source Telegram channels + RSS feeds, filters by keywords,
+deduplicates, and forwards matching posts to your own channel.
+
+Sources live in SQLite so the Streamlit dashboard can edit them at runtime
+(the bot re-reads the source tables every poll cycle).
+
+Setup:
+    1. Copy .env.example to .env and fill in your credentials.
+    2. pip install -r requirements.txt
+    3. Run the bot:      python osint_aggregator.py
+    4. Run the dashboard: streamlit run dashboard.py
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import logging
+import re
+from datetime import datetime, timedelta, timezone
+
+import feedparser
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from openai import OpenAI
+from telethon import TelegramClient, events
+from telethon.errors import FloodWaitError
+
+import config
+import db
+
+# ─────────────────────────────────────────────
+# LOGGING
+# ─────────────────────────────────────────────
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("osint")
+
+# ─────────────────────────────────────────────
+# KEYWORDS — only posts containing at least one pass the filter.
+# (Edit here; future enhancement: move to DB + dashboard editor.)
+# ─────────────────────────────────────────────
+
+KEYWORDS: list[str] = [
+    "breaking", "strike", "attack", "explosion", "troops",
+    "missile", "iran", "russia", "nato", "ukraine", "israel",
+    "conflict", "war", "military", "sanctions", "airstrike",
+]
+
+# Telegram's hard limit per message.
+TELEGRAM_MAX_LEN = 4096
+# Leave headroom for the "⚡️" / "📡 source · HH:MM UTC" wrapper.
+POST_BODY_MAX = TELEGRAM_MAX_LEN - 80
+
+# Minimum posts in a window before the digest LLM call is worth it.
+DIGEST_MIN_POSTS = 3
+
+# Marker used inside review-queue messages so the ✅/❌ handler can
+# resolve the original post without parsing free-form text.
+POST_ID_MARKER = "POST_ID:"
+
+# ─────────────────────────────────────────────
+# UTILITIES
+# ─────────────────────────────────────────────
+
+def make_id(text: str) -> str:
+    return hashlib.md5(text.encode()).hexdigest()
+
+
+def is_relevant(text: str) -> bool:
+    if not text:
+        return False
+    lower = text.lower()
+    return any(kw in lower for kw in KEYWORDS)
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def utc_stamp() -> str:
+    return utc_now().strftime("%H:%M UTC")
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def format_post(text: str, source: str) -> str:
+    """Apply consistent channel formatting and respect Telegram's length cap."""
+    body = _truncate(text.strip(), POST_BODY_MAX)
+    return (
+        f"⚡️ {body}\n\n"
+        f"📡 {source} · {utc_stamp()}"
+    )
+
+
+def format_digest(text: str, day: str) -> str:
+    body = _truncate(text.strip(), POST_BODY_MAX)
+    return (
+        f"📰 Daily Digest · {day}\n\n"
+        f"{body}\n\n"
+        f"📡 Synthesised by OSINT Aggregator · {utc_stamp()}"
+    )
+
+
+def extract_post_id(message_text: str) -> str | None:
+    if not message_text:
+        return None
+    m = re.search(rf"{POST_ID_MARKER}([a-f0-9]{{32}})", message_text)
+    return m.group(1) if m else None
+
+
+# ─────────────────────────────────────────────
+# POSTING
+# ─────────────────────────────────────────────
+
+async def send_post(
+    client: TelegramClient,
+    text: str,
+    source: str,
+    *,
+    kind: str = "post",
+    digest_of: str | None = None,
+) -> str | None:
+    """
+    Format + send (or queue for review). Returns the post_id of the
+    message that was queued/sent, or None if the post was dropped.
+
+    `kind` is 'post' for normal items and 'digest' for daily summaries;
+    it changes the format prefix and the posted_log.status default.
+    """
+    if kind == "digest":
+        day = digest_of or utc_now().date().isoformat()
+        formatted = format_digest(text, day)
+        status = "digest"
+        effective_digest_of = day
+    else:
+        formatted = format_post(text, source)
+        status = "review" if config.telegram().manual_review else "sent"
+        effective_digest_of = None
+
+    post_id = make_id(formatted)
+
+    try:
+        if config.telegram().manual_review:
+            review_text = (
+                f"📥 REVIEW QUEUE\n"
+                f"{POST_ID_MARKER}{post_id}\n"
+                f"Source: {source}\n"
+                f"──────────────\n"
+                f"{formatted}\n\n"
+                f"Reply ✅ to approve and post, or ❌ to discard."
+            )
+            await client.send_message(config.telegram().review_channel, review_text)
+            log.info("Queued for review | source=%s | kind=%s", source, kind)
+        else:
+            await client.send_message(config.telegram().output_channel, formatted)
+            log.info("Posted | source=%s | kind=%s | %s...", source, kind, text[:60])
+    except FloodWaitError as e:
+        log.warning("Flood wait: sleeping %ss", e.seconds)
+        await asyncio.sleep(e.seconds)
+        return None
+    except Exception:
+        log.exception("send_post failed | source=%s | kind=%s", source, kind)
+        return None
+
+    try:
+        db.log_post(
+            post_id=post_id,
+            source=source,
+            text=formatted,
+            status=status,
+            digest_of=effective_digest_of,
+        )
+    except Exception:
+        log.exception("posted_log write failed (post_id=%s)", post_id)
+
+    return post_id
+
+
+# ─────────────────────────────────────────────
+# REVIEW-QUEUE HANDLER
+# ─────────────────────────────────────────────
+
+def register_review_handler(client: TelegramClient) -> None:
+    """
+    Watch the review channel for admin replies.
+    ✅ in a reply → forward the original post to the output channel.
+    ❌ in a reply → discard.
+
+    Originals are looked up by POST_ID marker (no fragile string parsing
+    of the formatted body).
+    """
+    out_channel = config.telegram().output_channel
+
+    @client.on(events.NewMessage(chats=config.telegram().review_channel))
+    async def handle_review(event):
+        if not event.is_reply:
+            return
+        original = await event.get_reply_message()
+        if not original or not original.text:
+            return
+
+        post_id = extract_post_id(original.text)
+        if not post_id:
+            await event.reply("⚠️ Could not find POST_ID on the original message.")
+            return
+
+        decision = event.text.strip()
+        if "✅" in decision:
+            try:
+                with db.connect() as conn:
+                    row = conn.execute(
+                        "SELECT text, source FROM posted_log "
+                        "WHERE post_id = ? AND status = 'review' "
+                        "ORDER BY id DESC LIMIT 1",
+                        (post_id,),
+                    ).fetchone()
+                if not row:
+                    await event.reply("⚠️ No matching review record in log.")
+                    return
+                await client.send_message(out_channel, row["text"])
+                with db.connect() as conn:
+                    conn.execute(
+                        "UPDATE posted_log SET status = 'sent' "
+                        "WHERE post_id = ? AND status = 'review'",
+                        (post_id,),
+                    )
+                await event.reply("✅ Posted.")
+                log.info("Review approved | post_id=%s", post_id)
+            except Exception:
+                log.exception("Approval flow failed | post_id=%s", post_id)
+                await event.reply("⚠️ Failed to post — see bot logs.")
+
+        elif "❌" in decision:
+            try:
+                with db.connect() as conn:
+                    conn.execute(
+                        "UPDATE posted_log SET status = 'discarded' "
+                        "WHERE post_id = ? AND status = 'review'",
+                        (post_id,),
+                    )
+                await event.reply("🗑 Discarded.")
+                log.info("Review discarded | post_id=%s", post_id)
+            except Exception:
+                log.exception("Discard flow failed | post_id=%s", post_id)
+                await event.reply("⚠️ Failed to record discard.")
+
+
+# ─────────────────────────────────────────────
+# TELEGRAM SOURCE POLLING
+# ─────────────────────────────────────────────
+
+async def poll_telegram_sources(client: TelegramClient) -> None:
+    cfg = config.telegram()
+    channels = db.list_telegram_sources(enabled_only=True)
+    if not channels:
+        log.info("No enabled Telegram sources; skipping poll.")
+        return
+    log.info("Polling %d Telegram source(s)...", len(channels))
+    for channel_name in channels:
+        try:
+            entity = await client.get_entity(channel_name)
+        except Exception as e:
+            log.error("Could not resolve @%s: %s", channel_name, e)
+            continue
+        try:
+            async for message in client.iter_messages(
+                entity, limit=cfg.messages_per_channel
+            ):
+                if not message.text:
+                    continue
+                post_id = make_id(message.text)
+                source = f"@{channel_name}"
+                if not db.is_new(post_id, source):
+                    continue
+                if not is_relevant(message.text):
+                    continue
+                await send_post(client, message.text, source)
+                await asyncio.sleep(1)
+        except Exception as e:
+            log.error("Error polling @%s: %s", channel_name, e)
+
+
+# ─────────────────────────────────────────────
+# RSS FEED POLLING
+# ─────────────────────────────────────────────
+
+async def poll_rss_feeds(client: TelegramClient) -> None:
+    feeds = db.list_rss_feeds(enabled_only=True)
+    if not feeds:
+        log.info("No enabled RSS feeds; skipping poll.")
+        return
+    log.info("Polling %d RSS feed(s)...", len(feeds))
+    for feed_url in feeds:
+        try:
+            feed = await asyncio.to_thread(feedparser.parse, feed_url)
+            source_name = feed.feed.get("title", feed_url)
+            for entry in feed.entries[:10]:
+                title = entry.get("title", "")
+                summary = entry.get("summary", "")
+                link = entry.get("link", "")
+                full_text = f"{title}\n{summary}"
+                post_id = make_id(full_text)
+                if not db.is_new(post_id, source_name):
+                    continue
+                if not is_relevant(full_text):
+                    continue
+                body = (
+                    f"{title}\n\n"
+                    f"{summary[:300]}{'...' if len(summary) > 300 else ''}\n\n"
+                    f"🔗 {link}"
+                )
+                await send_post(client, body, source_name)
+                await asyncio.sleep(1)
+        except Exception as e:
+            log.error("Error polling RSS %s: %s", feed_url, e)
+
+
+# ─────────────────────────────────────────────
+# DIGEST GENERATION (LLM)
+# ─────────────────────────────────────────────
+
+DIGEST_SYSTEM_PROMPT = (
+    "You are an OSINT editor writing a daily briefing. Given a list of "
+    "raw posts collected over the last 24 hours, produce a concise daily "
+    "digest of the most important developments. Group related items under "
+    "short headings. Be factual, neutral, and avoid speculation. Keep the "
+    "total length under 700 words. Do not invent facts that are not in the "
+    "supplied posts; if a post is unclear, omit it."
+)
+
+
+def _build_openai_client() -> OpenAI:
+    cfg = config.openai_cfg()
+    if not cfg.api_key:
+        raise RuntimeError("OPENAI_API_KEY not set in .env")
+    return OpenAI(api_key=cfg.api_key)
+
+
+def _summarise_sync(posts: list, day: str) -> str:
+    client = _build_openai_client()
+    bullet_lines = []
+    for p in posts:
+        snippet = (p["text"] or "").strip()
+        if len(snippet) > 500:
+            snippet = snippet[:500].rstrip() + "…"
+        bullet_lines.append(f"- [{p['source']}] {snippet}")
+    user_msg = (
+        f"Date: {day}\n\n"
+        f"Posts collected (most recent first is NOT guaranteed; treat as a set):\n"
+        + "\n".join(bullet_lines)
+    )
+    response = client.chat.completions.create(
+        model=config.openai_cfg().model,
+        messages=[
+            {"role": "system", "content": DIGEST_SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg},
+        ],
+        temperature=0.3,
+    )
+    return response.choices[0].message.content or ""
+
+
+async def generate_digest(client: TelegramClient, *, day: str | None = None) -> bool:
+    """
+    Build a digest of the last 24h of posted_log entries and send it
+    through the standard send_post flow (so MANUAL_REVIEW is respected).
+
+    Returns True if a digest was produced, False if skipped.
+    """
+    end = utc_now()
+    start = end - timedelta(hours=24)
+    target_day = day or end.date().isoformat()
+    posts = db.posts_for_window(start.isoformat(), end.isoformat())
+
+    if len(posts) < DIGEST_MIN_POSTS:
+        log.info("Digest skipped: only %d posts in window (min=%d)",
+                 len(posts), DIGEST_MIN_POSTS)
+        return False
+
+    log.info("Generating digest for %s from %d posts...", target_day, len(posts))
+    try:
+        summary = await asyncio.to_thread(_summarise_sync, posts, target_day)
+    except Exception:
+        log.exception("OpenAI digest call failed")
+        return False
+    if not summary.strip():
+        log.warning("OpenAI returned empty digest")
+        return False
+
+    await send_post(
+        client,
+        summary,
+        source="Daily Digest",
+        kind="digest",
+        digest_of=target_day,
+    )
+    return True
+
+
+# ─────────────────────────────────────────────
+# PENDING DIGEST JOBS (dashboard trigger)
+# ─────────────────────────────────────────────
+
+async def process_pending_digest_jobs(client: TelegramClient) -> None:
+    """Pick up digest_jobs rows inserted by the dashboard and run them."""
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT id, window_start, window_end FROM digest_jobs "
+            "WHERE status = 'pending' ORDER BY requested_at LIMIT 1"
+        ).fetchall()
+        if not rows:
+            return
+        job = rows[0]
+        conn.execute(
+            "UPDATE digest_jobs SET status = 'running', started_at = ? "
+            "WHERE id = ?",
+            (utc_now().isoformat(), job["id"]),
+        )
+
+    posts = db.posts_for_window(job["window_start"], job["window_end"])
+    target_day = (job["window_end"][:10]) if job["window_end"] else utc_now().date().isoformat()
+
+    if len(posts) < DIGEST_MIN_POSTS:
+        with db.connect() as conn:
+            conn.execute(
+                "UPDATE digest_jobs SET status = 'done', finished_at = ?, "
+                "error = ? WHERE id = ?",
+                (utc_now().isoformat(),
+                 f"skipped: only {len(posts)} posts in window", job["id"]),
+            )
+        return
+
+    try:
+        summary = await asyncio.to_thread(_summarise_sync, posts, target_day)
+    except Exception as e:
+        with db.connect() as conn:
+            conn.execute(
+                "UPDATE digest_jobs SET status = 'failed', finished_at = ?, "
+                "error = ? WHERE id = ?",
+                (utc_now().isoformat(), str(e), job["id"]),
+            )
+        log.exception("Pending digest job failed")
+        return
+
+    if not summary.strip():
+        with db.connect() as conn:
+            conn.execute(
+                "UPDATE digest_jobs SET status = 'failed', finished_at = ?, "
+                "error = ? WHERE id = ?",
+                (utc_now().isoformat(), "OpenAI returned empty summary", job["id"]),
+            )
+        return
+
+    post_id = await send_post(
+        client, summary, source="Daily Digest",
+        kind="digest", digest_of=target_day,
+    )
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE digest_jobs SET status = 'done', finished_at = ?, "
+            "digest_post_id = ? WHERE id = ?",
+            (utc_now().isoformat(), post_id, job["id"]),
+        )
+
+
+# ─────────────────────────────────────────────
+# SCHEDULER
+# ─────────────────────────────────────────────
+
+async def daily_digest_job(client: TelegramClient) -> None:
+    await generate_digest(client)
+
+
+# ─────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────
+
+async def main():
+    config.require_secrets()
+    db.init_db()
+
+    log.info("Connecting to Telegram...")
+    client = TelegramClient(
+        config.telegram().session_name,
+        config.telegram().api_id,
+        config.telegram().api_hash,
+    )
+    await client.start()
+    me = await client.get_me()
+    log.info("Connected as %s (%s)", me.username or me.first_name, me.id)
+
+    if config.telegram().manual_review:
+        register_review_handler(client)
+        log.info("Review queue active → %s", config.telegram().review_channel)
+
+    scheduler = AsyncIOScheduler()
+
+    scheduler.add_job(
+        poll_telegram_sources,
+        "interval",
+        seconds=config.telegram().poll_interval,
+        args=[client],
+        next_run_time=utc_now(),
+    )
+    scheduler.add_job(
+        poll_rss_feeds,
+        "interval",
+        seconds=config.rss().poll_interval,
+        args=[client],
+        next_run_time=utc_now(),
+    )
+    scheduler.add_job(
+        process_pending_digest_jobs,
+        "interval",
+        seconds=60,
+        args=[client],
+        next_run_time=utc_now() + timedelta(minutes=1),
+    )
+    scheduler.add_job(
+        daily_digest_job,
+        "cron",
+        hour=config.digest().hour_utc,
+        minute=config.digest().minute_utc,
+        args=[client],
+    )
+
+    scheduler.start()
+    log.info(
+        "Scheduler running | TG=%ds | RSS=%ds | digest=%02d:%02d UTC",
+        config.telegram().poll_interval,
+        config.rss().poll_interval,
+        config.digest().hour_utc,
+        config.digest().minute_utc,
+    )
+
+    try:
+        await client.run_until_disconnected()
+    except (KeyboardInterrupt, SystemExit):
+        log.info("Shutting down...")
+    finally:
+        scheduler.shutdown(wait=False)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
