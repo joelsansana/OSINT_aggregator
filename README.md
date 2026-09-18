@@ -92,15 +92,9 @@ All config is loaded from `.env` (see `.env.example` for the full list).
 
 ### Keyword filter
 
-Keywords live in `osint_aggregator.py` at the top of the file:
+Keywords live in the `keywords` table and are managed at runtime from the dashboard's **🔑 Keywords** page (add / enable / disable / delete). The bot re-reads the list on every poll cycle, so changes apply within ~60 seconds with no restart.
 
-```python
-KEYWORDS = [
-    "breaking", "strike", "attack", ...
-]
-```
-
-A post passes the filter if its lowercased text contains any keyword. Editing keywords requires a bot restart (this is the one piece of config not in the dashboard).
+A post passes the filter if its lowercased text contains any enabled keyword. Substring matching — single words (`breaking`) and multi-word phrases (`breaking news`) both work. On first run the bot seeds the table with a reasonable default OSINT set (`breaking`, `strike`, `attack`, `explosion`, `missile`, `iran`, `russia`, `ukraine`, `israel`, `war`, `military`, …).
 
 ## Dashboard
 
@@ -126,6 +120,11 @@ Launch with `streamlit run dashboard.py` and open the URL it prints.
 - List feeds with on/off toggles.
 - Add a feed by URL. The **Preview** button parses it and shows the title + last 3 entries.
 - Delete to stop polling.
+
+### 🔑 Keywords
+- List keywords with on/off toggles.
+- Add a keyword or phrase (case-insensitive substring match). Defaults are seeded on first run.
+- Delete to stop matching. Changes apply on the next poll (~60s).
 
 ### 📊 Stats
 - Posts per day (line chart, configurable window).
@@ -154,8 +153,8 @@ pytest
 
 80 tests, ~3s. Coverage focuses on the highest-leverage surfaces:
 
-- `tests/test_db.py` — schema, WAL mode, seed behaviour, source/feed CRUD, `is_new` dedup, `posted_log` filters, `posts_for_window` (incl. `buffered` status), `digest_jobs` lifecycle, review-queue helpers (`list_pending_review`, `mark_review_action`), cross-connection visibility.
-- `tests/test_bot_helpers.py` — `make_id`, `is_relevant`, `format_post` / `format_digest` (including truncation), `extract_post_id`.
+- `tests/test_db.py` — schema, WAL mode, seed behaviour, source/feed/keyword CRUD, `is_new` dedup, `posted_log` filters, `posts_for_window` (incl. `buffered` status), `digest_jobs` lifecycle, review-queue helpers (`list_pending_review`, `mark_review_action`), cross-connection visibility.
+- `tests/test_bot_helpers.py` — `make_id`, `is_relevant` (incl. empty/multi-word keywords), `format_post` / `format_digest` (including truncation), `extract_post_id`.
 - `tests/test_config.py` — env parsing, defaults, `require_secrets` happy / error paths, LLM provider selection (`openai` / `minimax` / `glm`), legacy `OPENAI_*` fallback behaviour.
 
 Streamlit pages and the Telegram network code aren't covered (would need `streamlit.testing` and Telethon mocks).
@@ -185,7 +184,6 @@ OSINT_aggregator/
 - **Dashboard has no auth.** Run it on localhost or behind a reverse proxy. Don't expose it publicly.
 - **Single-instance only.** A `digest_jobs` row stuck in `running` after a bot crash will block new digests until manually cleared. For multi-instance deployment, add a startup sweep that marks stale `running` jobs as failed.
 - **Source validation is regex-only.** Telegram source names are checked against a simple format pattern; the bot logs an error at poll time if a channel is unreachable. If you want live `get_entity` validation in the dashboard, it would need to share the Telethon session with the bot.
-- **Keywords are not in the dashboard.** Editing `KEYWORDS` in `osint_aggregator.py` requires a bot restart. This was deliberately scoped out.
 - **`posted_log` grows unbounded.** Add a retention job (e.g. `DELETE FROM posted_log WHERE sent_at < datetime('now', '-90 days')`) if disk space matters.
 - **No content beyond text.** Telethon can pull media; the bot only inspects `message.text`. Posts that are purely images or videos are silently skipped.
 

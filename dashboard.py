@@ -315,11 +315,61 @@ def page_stats() -> None:
         st.info("No posts logged yet.")
 
 
+def page_keywords() -> None:
+    st.header("🔑 Keywords")
+    st.caption(
+        "Posts must contain at least one enabled keyword (case-insensitive "
+        "substring match). Changes apply on the next poll (~60s)."
+    )
+
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT keyword, added_at, enabled FROM keywords ORDER BY added_at"
+        ).fetchall()
+
+    if not rows:
+        st.info("No keywords yet — add one below.")
+
+    for r in rows:
+        cols = st.columns([3, 2, 1, 1])
+        cols[0].code(r["keyword"])
+        cols[1].caption(f"added {r['added_at']}")
+        new_enabled = cols[2].toggle(
+            "on",
+            value=bool(r["enabled"]),
+            key=f"kw_on_{r['keyword']}",
+            label_visibility="collapsed",
+        )
+        if new_enabled != bool(r["enabled"]):
+            db.set_keyword_enabled(r["keyword"], new_enabled)
+            st.rerun()
+        if cols[3].button("🗑", key=f"kw_del_{r['keyword']}"):
+            db.delete_keyword(r["keyword"])
+            st.rerun()
+
+    st.divider()
+    st.subheader("Add a keyword")
+    with st.form("add_kw", clear_on_submit=True):
+        kw = st.text_input("Keyword or phrase", placeholder="breaking")
+        submitted = st.form_submit_button("➕ Add")
+    if submitted:
+        candidate = kw.strip().lower()
+        if not candidate:
+            st.error("Enter a keyword.")
+        elif len(candidate) > 50:
+            st.error("Keyword must be 50 characters or fewer.")
+        elif db.add_keyword(candidate):
+            st.success(f"Added '{candidate}'.")
+        else:
+            st.warning(f"'{candidate}' already exists.")
+
+
 PAGES = {
     "📥 Review queue": page_review_queue,
     "📰 Digest": page_digest,
     "📡 Telegram sources": page_telegram_sources,
     "🗞 RSS feeds": page_rss_feeds,
+    "🔑 Keywords": page_keywords,
     "📊 Stats": page_stats,
 }
 

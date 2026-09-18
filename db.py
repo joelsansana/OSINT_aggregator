@@ -45,6 +45,12 @@ CREATE TABLE IF NOT EXISTS rss_feeds (
     enabled   INTEGER NOT NULL DEFAULT 1
 );
 
+CREATE TABLE IF NOT EXISTS keywords (
+    keyword   TEXT PRIMARY KEY,
+    added_at  TEXT NOT NULL,
+    enabled   INTEGER NOT NULL DEFAULT 1
+);
+
 CREATE TABLE IF NOT EXISTS posted_log (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     post_id   TEXT NOT NULL,
@@ -87,6 +93,12 @@ DEFAULT_RSS_FEEDS = [
     "https://rss.ap.org/rss/apf-topnews",
     "https://www.aljazeera.com/xml/rss/all.xml",
     "https://feeds.bbci.co.uk/news/world/rss.xml",
+]
+
+DEFAULT_KEYWORDS = [
+    "breaking", "strike", "attack", "explosion", "troops",
+    "missile", "iran", "russia", "nato", "ukraine", "israel",
+    "conflict", "war", "military", "sanctions", "airstrike",
 ]
 
 
@@ -140,6 +152,13 @@ def _seed_defaults(conn: sqlite3.Connection) -> None:
         conn.executemany(
             "INSERT OR IGNORE INTO rss_feeds (url, added_at, enabled) VALUES (?, ?, 1)",
             [(url, now) for url in DEFAULT_RSS_FEEDS],
+        )
+    cur = conn.execute("SELECT COUNT(*) AS n FROM keywords")
+    if cur.fetchone()["n"] == 0:
+        conn.executemany(
+            "INSERT OR IGNORE INTO keywords (keyword, added_at, enabled) "
+            "VALUES (?, ?, 1)",
+            [(kw, now) for kw in DEFAULT_KEYWORDS],
         )
 
 
@@ -248,6 +267,55 @@ def set_rss_feed_enabled(url: str, enabled: bool) -> None:
 def delete_rss_feed(url: str) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM rss_feeds WHERE url = ?", (url,))
+
+
+# ── keyword helpers ─────────────────────────────────────────────────
+
+def list_keywords(enabled_only: bool = False) -> list[str]:
+    with connect() as conn:
+        if enabled_only:
+            rows = conn.execute(
+                "SELECT keyword FROM keywords "
+                "WHERE enabled = 1 ORDER BY added_at"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT keyword FROM keywords ORDER BY added_at"
+            ).fetchall()
+        return [r["keyword"] for r in rows]
+
+
+def add_keyword(keyword: str) -> bool:
+    keyword = keyword.strip().lower()
+    if not keyword:
+        return False
+    with connect() as conn:
+        cur = conn.execute(
+            "SELECT 1 FROM keywords WHERE keyword = ?", (keyword,)
+        )
+        if cur.fetchone() is not None:
+            return False
+        conn.execute(
+            "INSERT INTO keywords (keyword, added_at, enabled) "
+            "VALUES (?, ?, 1)",
+            (keyword, _now_iso()),
+        )
+        return True
+
+
+def set_keyword_enabled(keyword: str, enabled: bool) -> None:
+    keyword = keyword.strip().lower()
+    with connect() as conn:
+        conn.execute(
+            "UPDATE keywords SET enabled = ? WHERE keyword = ?",
+            (1 if enabled else 0, keyword),
+        )
+
+
+def delete_keyword(keyword: str) -> None:
+    keyword = keyword.strip().lower()
+    with connect() as conn:
+        conn.execute("DELETE FROM keywords WHERE keyword = ?", (keyword,))
 
 
 # ── posted_log helpers ──────────────────────────────────────────────

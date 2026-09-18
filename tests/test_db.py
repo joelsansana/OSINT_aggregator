@@ -21,6 +21,7 @@ def test_init_db_creates_all_tables(fresh_db):
         "rss_feeds",
         "posted_log",
         "digest_jobs",
+        "keywords",
     } <= tables
 
 
@@ -64,6 +65,14 @@ def test_seed_inserts_default_rss_feeds(fresh_db):
     feeds = db.list_rss_feeds()
     assert len(feeds) == 4
     assert "https://rss.ap.org/rss/apf-topnews" in feeds
+
+
+def test_seed_inserts_default_keywords(fresh_db):
+    _db_path, db = fresh_db
+    kws = db.list_keywords()
+    assert "breaking" in kws
+    assert "strike" in kws
+    assert len(kws) >= 5
 
 
 # ── telegram_sources ────────────────────────────────────────────────
@@ -114,6 +123,31 @@ def test_toggle_and_delete_rss_feed(fresh_db):
     assert url in db.list_rss_feeds(enabled_only=True)
     db.delete_rss_feed(url)
     assert url not in db.list_rss_feeds()
+
+
+# ── keywords ────────────────────────────────────────────────────────
+
+def test_add_keyword_normalises_and_dedupes(fresh_db):
+    _db_path, db = fresh_db
+    assert db.add_keyword("  Evacuation  ") is True
+    assert db.add_keyword("evacuation") is False
+    assert "evacuation" in db.list_keywords()
+
+
+def test_add_keyword_rejects_empty(fresh_db):
+    _db_path, db = fresh_db
+    assert db.add_keyword("   ") is False
+    assert db.add_keyword("") is False
+
+
+def test_toggle_and_delete_keyword(fresh_db):
+    _db_path, db = fresh_db
+    db.set_keyword_enabled("breaking", False)
+    assert "breaking" not in db.list_keywords(enabled_only=True)
+    db.set_keyword_enabled("breaking", True)
+    assert "breaking" in db.list_keywords(enabled_only=True)
+    db.delete_keyword("breaking")
+    assert "breaking" not in db.list_keywords()
 
 
 # ── is_new / seen ───────────────────────────────────────────────────

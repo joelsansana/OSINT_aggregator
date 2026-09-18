@@ -19,18 +19,29 @@ def test_make_id_distinguishes_inputs():
 
 # ── is_relevant ─────────────────────────────────────────────────────
 
+KW = ["breaking", "strike", "russia"]
+
+
 def test_is_relevant_matches_keyword_case_insensitive():
-    assert oa.is_relevant("BREAKING: strike confirmed") is True
-    assert oa.is_relevant("lowercase russia update") is True
+    assert oa.is_relevant("BREAKING: strike confirmed", KW) is True
+    assert oa.is_relevant("lowercase russia update", KW) is True
 
 
 def test_is_relevant_rejects_non_matching():
-    assert oa.is_relevant("just a normal post about cooking") is False
+    assert oa.is_relevant("just a normal post about cooking", KW) is False
 
 
 def test_is_relevant_rejects_empty_and_none():
-    assert oa.is_relevant("") is False
-    assert oa.is_relevant(None) is False  # type: ignore[arg-type]
+    assert oa.is_relevant("", KW) is False
+    assert oa.is_relevant(None, KW) is False  # type: ignore[arg-type]
+
+
+def test_is_relevant_with_empty_keyword_list():
+    assert oa.is_relevant("BREAKING news", []) is False
+
+
+def test_is_relevant_supports_multi_word_keywords():
+    assert oa.is_relevant("Breaking news from the front", ["breaking news"]) is True
 
 
 # ── format_post ─────────────────────────────────────────────────────

@@ -44,14 +44,9 @@ log = logging.getLogger("osint")
 
 # ─────────────────────────────────────────────
 # KEYWORDS — only posts containing at least one pass the filter.
-# (Edit here; future enhancement: move to DB + dashboard editor.)
+# Managed at runtime via the dashboard (🔑 Keywords page); defaults
+# are seeded into the DB on first run from db.DEFAULT_KEYWORDS.
 # ─────────────────────────────────────────────
-
-KEYWORDS: list[str] = [
-    "breaking", "strike", "attack", "explosion", "troops",
-    "missile", "iran", "russia", "nato", "ukraine", "israel",
-    "conflict", "war", "military", "sanctions", "airstrike",
-]
 
 # Telegram's hard limit per message.
 TELEGRAM_MAX_LEN = 4096
@@ -73,11 +68,21 @@ def make_id(text: str) -> str:
     return hashlib.md5(text.encode()).hexdigest()
 
 
-def is_relevant(text: str) -> bool:
+def is_relevant(text: str, keywords: list[str] | None = None) -> bool:
+    """Return True if `text` contains any keyword (case-insensitive).
+
+    `keywords` is fetched once per poll cycle by the caller and passed in
+    so we don't hit the DB for every message. If omitted (e.g. in tests
+    or one-off scripts), it's read from the DB on demand.
+    """
     if not text:
         return False
+    if keywords is None:
+        keywords = db.list_keywords(enabled_only=True)
+    if not keywords:
+        return False
     lower = text.lower()
-    return any(kw in lower for kw in KEYWORDS)
+    return any(kw in lower for kw in keywords)
 
 
 def utc_now() -> datetime:
@@ -334,6 +339,7 @@ def register_review_handler(client: TelegramClient) -> None:
 async def poll_telegram_sources(client: TelegramClient) -> None:
     cfg = config.telegram()
     channels = db.list_telegram_sources(enabled_only=True)
+    keywords = db.list_keywords(enabled_only=True)
     if not channels:
         log.info("No enabled Telegram sources; skipping poll.")
         return
@@ -354,7 +360,7 @@ async def poll_telegram_sources(client: TelegramClient) -> None:
                 source = f"@{channel_name}"
                 if not db.is_new(post_id, source):
                     continue
-                if not is_relevant(message.text):
+                if not is_relevant(message.text, keywords):
                     continue
                 await send_post(client, message.text, source)
                 await asyncio.sleep(1)
@@ -368,6 +374,7 @@ async def poll_telegram_sources(client: TelegramClient) -> None:
 
 async def poll_rss_feeds(client: TelegramClient) -> None:
     feeds = db.list_rss_feeds(enabled_only=True)
+    keywords = db.list_keywords(enabled_only=True)
     if not feeds:
         log.info("No enabled RSS feeds; skipping poll.")
         return
@@ -384,7 +391,7 @@ async def poll_rss_feeds(client: TelegramClient) -> None:
                 post_id = make_id(full_text)
                 if not db.is_new(post_id, source_name):
                     continue
-                if not is_relevant(full_text):
+                if not is_relevant(full_text, keywords):
                     continue
                 body = (
                     f"{title}\n\n"
