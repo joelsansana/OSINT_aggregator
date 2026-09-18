@@ -2,6 +2,12 @@
 
 Monitors source Telegram channels and RSS feeds, filters by keyword, deduplicates, and forwards matching posts to your own Telegram channel. Comes with a Streamlit dashboard for live editing of sources and viewing the digest.
 
+## 📣 Follow the output channel
+
+See what this bot actually publishes in real time:
+
+**👉 [t.me/osint_ai_aggregator](https://t.me/osint_ai_aggregator)**
+
 ## What it does
 
 1. Polls a list of Telegram channels and RSS feeds on a schedule.
