@@ -6,14 +6,10 @@ import asyncio
 import socket
 import threading
 
-import pytest
-
 import cli
-import config
-import db
-
 
 # ── execute() ────────────────────────────────────────────────────────
+
 
 def test_help_returns_ok(fresh_db):
     _db_path, _db = fresh_db
@@ -36,6 +32,7 @@ def test_unknown_verb_is_err(fresh_db):
 
 
 # ── keyword commands ─────────────────────────────────────────────────
+
 
 def test_keyword_add_and_list(fresh_db):
     _db_path, _db = fresh_db
@@ -90,6 +87,7 @@ def test_keyword_remove(fresh_db):
 
 # ── telegram commands ────────────────────────────────────────────────
 
+
 def test_telegram_add_validates_name(fresh_db):
     _db_path, _db = fresh_db
     assert cli.execute("telegram add newchan").ok is True
@@ -117,6 +115,7 @@ def test_telegram_alias_works(fresh_db):
 
 # ── rss commands ─────────────────────────────────────────────────────
 
+
 def test_rss_add_requires_http_scheme(fresh_db):
     _db_path, _db = fresh_db
     bad = cli.execute("rss add ftp://example.com/feed")
@@ -134,6 +133,7 @@ def test_rss_add_and_remove(fresh_db):
 
 # ── status ───────────────────────────────────────────────────────────
 
+
 def test_status_includes_counts(fresh_db):
     _db_path, _db = fresh_db
     cli.execute("keyword add customkw")
@@ -146,6 +146,7 @@ def test_status_includes_counts(fresh_db):
 
 
 # ── wire format ──────────────────────────────────────────────────────
+
 
 def test_wire_format_success_with_data():
     result = cli.CommandResult.ok_msg("a", "b", "c")
@@ -164,6 +165,7 @@ def test_wire_format_error():
 
 
 # ── TCP server ───────────────────────────────────────────────────────
+
 
 def _free_port() -> int:
     """Ask the kernel for an unused TCP port."""
@@ -206,7 +208,7 @@ def _run_server_in_thread(host: str, port: int, token: str) -> threading.Thread:
 
         try:
             loop.run_until_complete(go())
-        except Exception as e:  # pragma: no cover
+        except Exception as e:  # pragma: no cover  # noqa: BLE001
             error_box.append(e)
         finally:
             loop.close()

@@ -77,6 +77,7 @@ def test_seed_inserts_default_keywords(fresh_db):
 
 # ── telegram_sources ────────────────────────────────────────────────
 
+
 def test_add_telegram_source_normalises_and_dedupes(fresh_db):
     _db_path, db = fresh_db
     assert db.add_telegram_source("  @NewChan  ") is True
@@ -107,6 +108,7 @@ def test_delete_telegram_source(fresh_db):
 
 # ── rss_feeds ───────────────────────────────────────────────────────
 
+
 def test_add_rss_feed_dedupes(fresh_db):
     _db_path, db = fresh_db
     assert db.add_rss_feed("https://example.com/feed") is True
@@ -126,6 +128,7 @@ def test_toggle_and_delete_rss_feed(fresh_db):
 
 
 # ── keywords ────────────────────────────────────────────────────────
+
 
 def test_add_keyword_normalises_and_dedupes(fresh_db):
     _db_path, db = fresh_db
@@ -152,6 +155,7 @@ def test_toggle_and_delete_keyword(fresh_db):
 
 # ── is_new / seen ───────────────────────────────────────────────────
 
+
 def test_is_new_records_first_seen_and_source(seeded_db):
     _db_path, db = seeded_db
     assert db.is_new("freshhash", "@newchan") is True
@@ -170,6 +174,7 @@ def test_is_new_does_not_duplicate_existing_seen(fresh_db):
 
 
 # ── posted_log ──────────────────────────────────────────────────────
+
 
 def test_list_posts_filters_by_status(seeded_db):
     _db_path, db = seeded_db
@@ -210,9 +215,7 @@ def test_distinct_sources(seeded_db):
 
 def test_posts_for_window_only_returns_sent_and_review(seeded_db):
     _db_path, db = seeded_db
-    rows = db.posts_for_window(
-        "1970-01-01T00:00:00+00:00", "2999-12-31T00:00:00+00:00"
-    )
+    rows = db.posts_for_window("1970-01-01T00:00:00+00:00", "2999-12-31T00:00:00+00:00")
     statuses = {r["status"] for r in rows}
     assert statuses <= {"sent", "review"}
     ids = {r["post_id"] for r in rows}
@@ -236,6 +239,7 @@ def test_mark_post_status_via_direct_sql(seeded_db):
 
 # ── posts_per_day / posts_per_source ────────────────────────────────
 
+
 def test_posts_per_day_fills_zero_days(seeded_db):
     _db_path, db = seeded_db
     rows = db.posts_per_day(days=7)
@@ -255,6 +259,7 @@ def test_posts_per_source_orders_desc(seeded_db):
 
 # ── digest_jobs ─────────────────────────────────────────────────────
 
+
 def test_enqueue_digest_job_creates_pending_row(fresh_db):
     _db_path, db = fresh_db
     job_id = db.enqueue_digest_job(
@@ -272,7 +277,9 @@ def test_enqueue_digest_job_creates_pending_row(fresh_db):
 def test_digest_jobs_state_transitions(fresh_db):
     """Verify the worker can mark running → done/failed via SQL."""
     _db_path, db = fresh_db
-    job_id = db.enqueue_digest_job("2026-01-01T00:00:00+00:00", "2026-01-02T00:00:00+00:00")
+    job_id = db.enqueue_digest_job(
+        "2026-01-01T00:00:00+00:00", "2026-01-02T00:00:00+00:00"
+    )
     with db.connect() as conn:
         conn.execute(
             "UPDATE digest_jobs SET status='running', started_at=? WHERE id=?",
@@ -283,9 +290,7 @@ def test_digest_jobs_state_transitions(fresh_db):
             "WHERE id=?",
             ("2026-01-01T00:00:05", "abc123", job_id),
         )
-        row = conn.execute(
-            "SELECT * FROM digest_jobs WHERE id=?", (job_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM digest_jobs WHERE id=?", (job_id,)).fetchone()
     assert row["status"] == "done"
     assert row["digest_post_id"] == "abc123"
 
@@ -299,6 +304,7 @@ def test_list_digest_jobs_newest_first(fresh_db):
 
 
 # ── cross-process / concurrency sanity ──────────────────────────────
+
 
 def test_concurrent_connections_share_state(seeded_db):
     """WAL + busy_timeout should let two connections see each other's writes."""
@@ -318,6 +324,7 @@ def test_concurrent_connections_share_state(seeded_db):
 
 
 # ── review-queue helpers ─────────────────────────────────────────────
+
 
 def _status(db, post_id: str) -> str | None:
     with db.connect() as conn:
@@ -386,6 +393,7 @@ def test_mark_review_action_is_idempotent(seeded_db):
 
 # ── posts_for_window status coverage ────────────────────────────────
 
+
 def test_posts_for_window_includes_buffered(seeded_db):
     """Digest should pick up digest-only buffered posts, not just sent/review."""
     _db_path, db = seeded_db
@@ -396,9 +404,7 @@ def test_posts_for_window_includes_buffered(seeded_db):
             ("buf1", "@x", "buffered post", "2026-09-16T12:00:00+00:00", "buffered"),
         )
         conn.commit()
-    rows = db.posts_for_window(
-        "2026-09-16T00:00:00+00:00", "2026-09-17T00:00:00+00:00"
-    )
+    rows = db.posts_for_window("2026-09-16T00:00:00+00:00", "2026-09-17T00:00:00+00:00")
     ids = {r["post_id"] for r in rows}
     assert "buf1" in ids
 
@@ -406,8 +412,6 @@ def test_posts_for_window_includes_buffered(seeded_db):
 def test_posts_for_window_excludes_discarded(seeded_db):
     """Discarded posts should never feed into a digest."""
     _db_path, db = seeded_db
-    rows = db.posts_for_window(
-        "2026-09-16T00:00:00+00:00", "2026-09-17T00:00:00+00:00"
-    )
+    rows = db.posts_for_window("2026-09-16T00:00:00+00:00", "2026-09-17T00:00:00+00:00")
     ids = {r["post_id"] for r in rows}
     assert "p3" not in ids  # p3 was seeded as 'discarded'

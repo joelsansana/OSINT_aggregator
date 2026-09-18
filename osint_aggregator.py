@@ -64,6 +64,7 @@ POST_ID_MARKER = "POST_ID:"
 # UTILITIES
 # ─────────────────────────────────────────────
 
+
 def make_id(text: str) -> str:
     return hashlib.md5(text.encode()).hexdigest()
 
@@ -102,10 +103,7 @@ def _truncate(text: str, limit: int) -> str:
 def format_post(text: str, source: str) -> str:
     """Apply consistent channel formatting and respect Telegram's length cap."""
     body = _truncate(text.strip(), POST_BODY_MAX)
-    return (
-        f"⚡️ {body}\n\n"
-        f"📡 {source} · {utc_stamp()}"
-    )
+    return f"⚡️ {body}\n\n📡 {source} · {utc_stamp()}"
 
 
 def format_digest(text: str, day: str) -> str:
@@ -127,6 +125,7 @@ def extract_post_id(message_text: str) -> str | None:
 # ─────────────────────────────────────────────
 # POSTING
 # ─────────────────────────────────────────────
+
 
 async def send_post(
     client: TelegramClient,
@@ -193,7 +192,9 @@ async def send_post(
                 log.info("Queued for review | source=%s | kind=%s", source, kind)
             else:
                 await client.send_message(config.telegram().output_channel, formatted)
-                log.info("Posted | source=%s | kind=%s | %s...", source, kind, text[:60])
+                log.info(
+                    "Posted | source=%s | kind=%s | %s...", source, kind, text[:60]
+                )
         except FloodWaitError as e:
             log.warning("Flood wait: sleeping %ss", e.seconds)
             await asyncio.sleep(e.seconds)
@@ -220,6 +221,7 @@ async def send_post(
 # REVIEW-QUEUE HANDLER
 # ─────────────────────────────────────────────
 
+
 def register_review_handler(client: TelegramClient) -> None:
     """
     Watch the review channel for admin replies.
@@ -234,7 +236,9 @@ def register_review_handler(client: TelegramClient) -> None:
     # Inline-button handler (callback data: "approve:<post_id>" /
     # "discard:<post_id>"). Posts are forwarded inline so the user sees
     # the result in the output channel immediately on tap.
-    @client.on(events.CallbackQuery(data=re.compile(rb"^(approve|discard):([a-f0-9]{32})$")))
+    @client.on(
+        events.CallbackQuery(data=re.compile(rb"^(approve|discard):([a-f0-9]{32})$"))
+    )
     async def handle_review_button(event):
         action, post_id = event.data.decode().split(":", 1)
         if action == "approve":
@@ -336,6 +340,7 @@ def register_review_handler(client: TelegramClient) -> None:
 # TELEGRAM SOURCE POLLING
 # ─────────────────────────────────────────────
 
+
 async def poll_telegram_sources(client: TelegramClient) -> None:
     cfg = config.telegram()
     channels = db.list_telegram_sources(enabled_only=True)
@@ -347,7 +352,7 @@ async def poll_telegram_sources(client: TelegramClient) -> None:
     for channel_name in channels:
         try:
             entity = await client.get_entity(channel_name)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             log.error("Could not resolve @%s: %s", channel_name, e)
             continue
         try:
@@ -364,13 +369,14 @@ async def poll_telegram_sources(client: TelegramClient) -> None:
                     continue
                 await send_post(client, message.text, source)
                 await asyncio.sleep(1)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             log.error("Error polling @%s: %s", channel_name, e)
 
 
 # ─────────────────────────────────────────────
 # RSS FEED POLLING
 # ─────────────────────────────────────────────
+
 
 async def poll_rss_feeds(client: TelegramClient) -> None:
     feeds = db.list_rss_feeds(enabled_only=True)
@@ -400,7 +406,7 @@ async def poll_rss_feeds(client: TelegramClient) -> None:
                 )
                 await send_post(client, body, source_name)
                 await asyncio.sleep(1)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             log.error("Error polling RSS %s: %s", feed_url, e)
 
 
@@ -408,22 +414,65 @@ async def poll_rss_feeds(client: TelegramClient) -> None:
 # DIGEST GENERATION (LLM)
 # ─────────────────────────────────────────────
 
-DIGEST_SYSTEM_PROMPT = (
-    "You are an OSINT editor writing a daily briefing. Given a list of "
-    "raw posts collected over the last 24 hours, produce a concise daily "
-    "digest of the most important developments. Group related items under "
-    "short headings. Be factual, neutral, and avoid speculation. Keep the "
-    "total length under 700 words. Do not invent facts that are not in the "
-    "supplied posts; if a post is unclear, omit it."
-)
+DIGEST_SYSTEM_PROMPT = """You are a News Digest Generator. Your job is to read a batch of news articles/snippets provided by the user and produce a concise, high-signal digest of the most important developments from the specified time window.
+
+## CONFIGURATION
+- Time window: last 24 hours — only report on events/updates from this window. If an article's timestamp is unclear, use your best judgment but flag uncertainty rather than silently including stale news.
+- Digest length target: about 300 words — treat this as a hard ceiling, not a target to pad toward.
+- Audience/focus: Geopolitics.
+
+## YOUR TASK
+1. Read all provided source material.
+2. Identify which stories are genuinely significant within the time window — not everything that happened, only what matters.
+3. Deduplicate: if multiple sources cover the same event, merge them into one item and note if sources disagree on facts.
+4. Rank by importance, not chronology, unless the user's config specifies otherwise.
+5. Write the digest.
+
+## WHAT COUNTS AS *IMPORTANT*
+Prioritize, in roughly this order:
+- Events with material real-world consequences (policy decisions, conflicts, major economic shifts, deaths of major figures, disasters, significant court rulings)
+- Developments that change the trajectory of an ongoing major story
+- High-confidence, well-corroborated facts over single-source claims
+- Breadth of impact (affects many people/institutions) over novelty or virality
+
+Deprioritize or exclude:
+- Celebrity gossip, routine sports results (unless explicitly in scope), opinion pieces framed as news, speculative *could happen* pieces without new facts, and stories that are interesting but not important.
+- Redundant restatements of already-known ongoing situations with no new development.
+
+## OUTPUT FORMAT
+- Lead with a one-line summary of the overall news landscape for the window (optional, only if it adds value).
+- Then a list of items, each:
+  - **Bold 4-8 word headline** stating the core fact, not a teaser.
+  - 1-3 sentences of substance: what happened, who's involved, why it matters. No throat-clearing (*In a significant development...*).
+  - Attribution only where it matters (disputed facts, single-source claims, or official statements) — otherwise state facts plainly.
+- Group related items under a shared sub-header only if the batch naturally clusters (e.g., *Markets*, *Conflict Updates*) — do not force categories onto a small digest.
+- End with nothing extra. No *stay tuned*, no summary-of-the-summary, no sign-off.
+
+## STYLE RULES
+- Every sentence must carry a fact. Cut anything that's scene-setting, editorializing, or filler.
+- Plain, declarative sentences. Active voice. No hedging language (*it seems*, *reportedly*, *some say*) unless the fact itself is genuinely uncertain and that uncertainty is worth conveying.
+- No adjectives that don't add information (*massive*, *shocking*, *historic*) unless the scale is itself the fact being reported (then use a number instead).
+- Write for someone who has 90 seconds and no prior context loaded — but assume general world literacy (don't explain what the UN is).
+- Do not editorialize, predict, or offer opinions on what should happen next.
+
+## ACCURACY AND SOURCING DISCIPLINE
+- Only report what's stated in the provided source material. Do not fill gaps from prior knowledge, and do not speculate about outcomes not yet reported.
+- If sources conflict on a material fact (death toll, who's responsible, exact figures), state the discrepancy in one clause rather than picking a side silently.
+- If the source material is too thin, too old, or entirely non-newsworthy to fill the requested digest length, say so explicitly rather than padding with lower-importance items dressed up as major news. A shorter honest digest beats a padded one.
+- Never fabricate a source, quote, or statistic not present in the input.
+
+## EDGE CASES
+- If two *top* stories are close in importance, include both rather than forcing a false hierarchy.
+- If nothing in the window meets the importance bar, output: *No major developments in the last 24 hours.* plus, optionally, 1-2 lower-tier items clearly labeled as minor.
+- If the input contains non-news content (ads, navigation text, malformed scrapes), silently discard it — do not comment on the quality of the input.
+
+Your only output is the digest itself, in the specified format. No meta-commentary about your process, no confirmation of the instructions, no *Here is your digest:* preamble."""
 
 
 def _build_llm_client() -> OpenAI:
     cfg = config.llm()
     if not cfg.api_key:
-        raise RuntimeError(
-            f"API key for LLM provider {cfg.provider!r} not set in .env"
-        )
+        raise RuntimeError(f"API key for LLM provider {cfg.provider!r} not set in .env")
     return OpenAI(api_key=cfg.api_key, base_url=cfg.base_url)
 
 
@@ -468,8 +517,11 @@ async def generate_digest(client: TelegramClient, *, day: str | None = None) -> 
     posts = db.posts_for_window(start.isoformat(), end.isoformat())
 
     if len(posts) < DIGEST_MIN_POSTS:
-        log.info("Digest skipped: only %d posts in window (min=%d)",
-                 len(posts), DIGEST_MIN_POSTS)
+        log.info(
+            "Digest skipped: only %d posts in window (min=%d)",
+            len(posts),
+            DIGEST_MIN_POSTS,
+        )
         return False
 
     log.info("Generating digest for %s from %d posts...", target_day, len(posts))
@@ -496,6 +548,7 @@ async def generate_digest(client: TelegramClient, *, day: str | None = None) -> 
 # PENDING DIGEST JOBS (dashboard trigger)
 # ─────────────────────────────────────────────
 
+
 async def process_pending_digest_jobs(client: TelegramClient) -> None:
     """Pick up digest_jobs rows inserted by the dashboard and run them."""
     with db.connect() as conn:
@@ -507,21 +560,25 @@ async def process_pending_digest_jobs(client: TelegramClient) -> None:
             return
         job = rows[0]
         conn.execute(
-            "UPDATE digest_jobs SET status = 'running', started_at = ? "
-            "WHERE id = ?",
+            "UPDATE digest_jobs SET status = 'running', started_at = ? WHERE id = ?",
             (utc_now().isoformat(), job["id"]),
         )
 
     posts = db.posts_for_window(job["window_start"], job["window_end"])
-    target_day = (job["window_end"][:10]) if job["window_end"] else utc_now().date().isoformat()
+    target_day = (
+        (job["window_end"][:10]) if job["window_end"] else utc_now().date().isoformat()
+    )
 
     if len(posts) < DIGEST_MIN_POSTS:
         with db.connect() as conn:
             conn.execute(
                 "UPDATE digest_jobs SET status = 'done', finished_at = ?, "
                 "error = ? WHERE id = ?",
-                (utc_now().isoformat(),
-                 f"skipped: only {len(posts)} posts in window", job["id"]),
+                (
+                    utc_now().isoformat(),
+                    f"skipped: only {len(posts)} posts in window",
+                    job["id"],
+                ),
             )
         return
 
@@ -547,8 +604,11 @@ async def process_pending_digest_jobs(client: TelegramClient) -> None:
         return
 
     post_id = await send_post(
-        client, summary, source="Daily Digest",
-        kind="digest", digest_of=target_day,
+        client,
+        summary,
+        source="Daily Digest",
+        kind="digest",
+        digest_of=target_day,
     )
     with db.connect() as conn:
         conn.execute(
@@ -561,6 +621,7 @@ async def process_pending_digest_jobs(client: TelegramClient) -> None:
 # ─────────────────────────────────────────────
 # REVIEW-ACTION FORWARDING (polling for dashboard approvals)
 # ─────────────────────────────────────────────
+
 
 async def process_review_actions(client: TelegramClient) -> None:
     """
@@ -605,6 +666,7 @@ async def process_review_actions(client: TelegramClient) -> None:
 # SCHEDULER
 # ─────────────────────────────────────────────
 
+
 async def daily_digest_job(client: TelegramClient) -> None:
     await generate_digest(client)
 
@@ -612,6 +674,7 @@ async def daily_digest_job(client: TelegramClient) -> None:
 # ─────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────
+
 
 async def main():
     config.require_secrets()

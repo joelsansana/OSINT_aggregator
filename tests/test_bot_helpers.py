@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import osint_aggregator as oa
 
-
 # ── make_id ─────────────────────────────────────────────────────────
+
 
 def test_make_id_is_stable_and_hex():
     assert oa.make_id("hello") == oa.make_id("hello")
@@ -46,6 +46,7 @@ def test_is_relevant_supports_multi_word_keywords():
 
 # ── format_post ─────────────────────────────────────────────────────
 
+
 def test_format_post_wraps_with_source_and_timestamp():
     out = oa.format_post("hello", "@osintdefender")
     assert out.startswith("⚡️ hello")
@@ -70,6 +71,7 @@ def test_format_post_truncates_oversized_body():
 
 # ── format_digest ───────────────────────────────────────────────────
 
+
 def test_format_digest_includes_day_label():
     out = oa.format_digest("summary body", "2026-09-16")
     assert "📰 Daily Digest · 2026-09-16" in out
@@ -84,6 +86,7 @@ def test_format_digest_truncates_oversized_body():
 
 
 # ── extract_post_id ─────────────────────────────────────────────────
+
 
 def test_extract_post_id_finds_marker():
     sample = (

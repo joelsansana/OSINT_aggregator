@@ -15,7 +15,6 @@ Pages:
 
 from __future__ import annotations
 
-import asyncio
 import csv
 import io
 import re
@@ -90,7 +89,9 @@ def page_review_queue() -> None:
 
 def page_digest() -> None:
     st.header("📰 Digest")
-    st.caption("All posts the bot has handled — sent, queued for review, discarded, or generated as a digest.")
+    st.caption(
+        "All posts the bot has handled — sent, queued for review, discarded, or generated as a digest."
+    )
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -133,7 +134,9 @@ def page_digest() -> None:
             writer = csv.writer(csv_buf)
             writer.writerow(["sent_at", "status", "source", "text", "digest_of"])
             for r in rows:
-                writer.writerow([r["sent_at"], r["status"], r["source"], r["text"], r["digest_of"]])
+                writer.writerow(
+                    [r["sent_at"], r["status"], r["source"], r["text"], r["digest_of"]]
+                )
             st.download_button(
                 "⬇️ Export CSV",
                 data=csv_buf.getvalue(),
@@ -232,7 +235,9 @@ def page_telegram_sources() -> None:
     if submitted:
         candidate = ch.strip().lstrip("@")
         if not TELEGRAM_CHANNEL_RE.match(candidate):
-            st.error("Invalid channel name. Use 4–32 chars, letters/digits/underscore, must start with a letter.")
+            st.error(
+                "Invalid channel name. Use 4–32 chars, letters/digits/underscore, must start with a letter."
+            )
         elif db.add_telegram_source(candidate):
             st.success(f"Added @{candidate}.")
         else:
@@ -241,7 +246,9 @@ def page_telegram_sources() -> None:
 
 def page_rss_feeds() -> None:
     st.header("🗞 RSS feeds")
-    st.caption("RSS feeds the bot polls every 5 minutes. Changes apply on the next poll.")
+    st.caption(
+        "RSS feeds the bot polls every 5 minutes. Changes apply on the next poll."
+    )
 
     with db.connect() as conn:
         rows = conn.execute(
@@ -276,16 +283,19 @@ def page_rss_feeds() -> None:
             st.error("Enter a URL.")
         else:
             import feedparser
+
             try:
                 feed = feedparser.parse(url.strip())
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 st.error(f"Parse error: {e}")
                 feed = None
             if feed is not None:
                 title = feed.feed.get("title", "(no title)")
                 st.write(f"**{title}**")
                 for entry in feed.entries[:3]:
-                    st.markdown(f"- [{entry.get('title', '(no title)')}]({entry.get('link', '#')})")
+                    st.markdown(
+                        f"- [{entry.get('title', '(no title)')}]({entry.get('link', '#')})"
+                    )
     if submitted:
         if not url.strip().startswith(("http://", "https://")):
             st.error("URL must start with http:// or https://")

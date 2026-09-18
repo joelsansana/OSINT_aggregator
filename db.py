@@ -11,10 +11,10 @@ Provides:
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Iterator
 
 import config
 
@@ -96,9 +96,22 @@ DEFAULT_RSS_FEEDS = [
 ]
 
 DEFAULT_KEYWORDS = [
-    "breaking", "strike", "attack", "explosion", "troops",
-    "missile", "iran", "russia", "nato", "ukraine", "israel",
-    "conflict", "war", "military", "sanctions", "airstrike",
+    "breaking",
+    "strike",
+    "attack",
+    "explosion",
+    "troops",
+    "missile",
+    "iran",
+    "russia",
+    "nato",
+    "ukraine",
+    "israel",
+    "conflict",
+    "war",
+    "military",
+    "sanctions",
+    "airstrike",
 ]
 
 
@@ -164,12 +177,11 @@ def _seed_defaults(conn: sqlite3.Connection) -> None:
 
 # ── seen-posts helpers ──────────────────────────────────────────────
 
+
 def is_new(post_id: str, source: str = "") -> bool:
     """Return True if `post_id` has not been seen; record it either way."""
     with connect() as conn:
-        cur = conn.execute(
-            "SELECT 1 FROM seen WHERE post_id = ?", (post_id,)
-        )
+        cur = conn.execute("SELECT 1 FROM seen WHERE post_id = ?", (post_id,))
         if cur.fetchone() is not None:
             return False
         conn.execute(
@@ -180,6 +192,7 @@ def is_new(post_id: str, source: str = "") -> bool:
 
 
 # ── source helpers ──────────────────────────────────────────────────
+
 
 def list_telegram_sources(enabled_only: bool = False) -> list[str]:
     with connect() as conn:
@@ -271,12 +284,12 @@ def delete_rss_feed(url: str) -> None:
 
 # ── keyword helpers ─────────────────────────────────────────────────
 
+
 def list_keywords(enabled_only: bool = False) -> list[str]:
     with connect() as conn:
         if enabled_only:
             rows = conn.execute(
-                "SELECT keyword FROM keywords "
-                "WHERE enabled = 1 ORDER BY added_at"
+                "SELECT keyword FROM keywords WHERE enabled = 1 ORDER BY added_at"
             ).fetchall()
         else:
             rows = conn.execute(
@@ -290,14 +303,11 @@ def add_keyword(keyword: str) -> bool:
     if not keyword:
         return False
     with connect() as conn:
-        cur = conn.execute(
-            "SELECT 1 FROM keywords WHERE keyword = ?", (keyword,)
-        )
+        cur = conn.execute("SELECT 1 FROM keywords WHERE keyword = ?", (keyword,))
         if cur.fetchone() is not None:
             return False
         conn.execute(
-            "INSERT INTO keywords (keyword, added_at, enabled) "
-            "VALUES (?, ?, 1)",
+            "INSERT INTO keywords (keyword, added_at, enabled) VALUES (?, ?, 1)",
             (keyword, _now_iso()),
         )
         return True
@@ -319,6 +329,7 @@ def delete_keyword(keyword: str) -> None:
 
 
 # ── posted_log helpers ──────────────────────────────────────────────
+
 
 def log_post(
     post_id: str,
@@ -364,8 +375,7 @@ def list_posts(
     params.append(limit)
     with connect() as conn:
         rows = conn.execute(
-            f"SELECT * FROM posted_log {where} "
-            f"ORDER BY sent_at DESC LIMIT ?",
+            f"SELECT * FROM posted_log {where} ORDER BY sent_at DESC LIMIT ?",
             params,
         ).fetchall()
         return rows
@@ -408,9 +418,7 @@ def mark_review_action(post_id: str, action: str) -> bool:
     post is unknown or already actioned. Idempotent.
     """
     if action not in ("approve", "discard"):
-        raise ValueError(
-            f"action must be 'approve' or 'discard', got {action!r}"
-        )
+        raise ValueError(f"action must be 'approve' or 'discard', got {action!r}")
     new_status = "approved" if action == "approve" else "discarded"
     with connect() as conn:
         cur = conn.execute(
@@ -432,6 +440,7 @@ def distinct_sources() -> list[str]:
 def posts_per_day(days: int = 30) -> list[sqlite3.Row]:
     """Daily post counts for the last N days, including zero days."""
     from datetime import timedelta
+
     end = datetime.now(timezone.utc).date()
     start = end - timedelta(days=days - 1)
     with connect() as conn:
@@ -459,6 +468,7 @@ def posts_per_source() -> list[sqlite3.Row]:
 
 
 # ── digest_jobs helpers ─────────────────────────────────────────────
+
 
 def enqueue_digest_job(window_start: str, window_end: str) -> int:
     """Insert a pending digest job and return its id."""

@@ -10,19 +10,35 @@ import pytest
 def _reload_config(monkeypatch, env: dict):
     """Reload config.py with a controlled environment, ignoring any .env file."""
     import dotenv
+
     monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **kw: None)
     for k in (
-        "API_ID", "API_HASH", "OUTPUT_CHANNEL", "MANUAL_REVIEW",
-        "REVIEW_CHANNEL", "SESSION_NAME", "DIGEST_ONLY",
-        "OPENAI_API_KEY", "OPENAI_MODEL",
-        "LLM_PROVIDER", "LLM_API_KEY", "LLM_MODEL", "LLM_BASE_URL",
-        "TELEGRAM_POLL_INTERVAL", "RSS_POLL_INTERVAL", "MESSAGES_PER_CHANNEL",
-        "DIGEST_HOUR_UTC", "DIGEST_MINUTE_UTC", "DIGEST_INTERVAL_HOURS", "DB_PATH",
+        "API_ID",
+        "API_HASH",
+        "OUTPUT_CHANNEL",
+        "MANUAL_REVIEW",
+        "REVIEW_CHANNEL",
+        "SESSION_NAME",
+        "DIGEST_ONLY",
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+        "LLM_PROVIDER",
+        "LLM_API_KEY",
+        "LLM_MODEL",
+        "LLM_BASE_URL",
+        "TELEGRAM_POLL_INTERVAL",
+        "RSS_POLL_INTERVAL",
+        "MESSAGES_PER_CHANNEL",
+        "DIGEST_HOUR_UTC",
+        "DIGEST_MINUTE_UTC",
+        "DIGEST_INTERVAL_HOURS",
+        "DB_PATH",
     ):
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     import config
+
     importlib.reload(config)
     return config
 
@@ -41,16 +57,19 @@ def test_telegram_config_defaults(monkeypatch):
 
 
 def test_telegram_config_parses_env(monkeypatch):
-    cfg = _reload_config(monkeypatch, {
-        "API_ID": "12345",
-        "API_HASH": "hash",
-        "OUTPUT_CHANNEL": "@out",
-        "MANUAL_REVIEW": "false",
-        "REVIEW_CHANNEL": "@review",
-        "TELEGRAM_POLL_INTERVAL": "30",
-        "MESSAGES_PER_CHANNEL": "10",
-        "DIGEST_ONLY": "true",
-    }).telegram()
+    cfg = _reload_config(
+        monkeypatch,
+        {
+            "API_ID": "12345",
+            "API_HASH": "hash",
+            "OUTPUT_CHANNEL": "@out",
+            "MANUAL_REVIEW": "false",
+            "REVIEW_CHANNEL": "@review",
+            "TELEGRAM_POLL_INTERVAL": "30",
+            "MESSAGES_PER_CHANNEL": "10",
+            "DIGEST_ONLY": "true",
+        },
+    ).telegram()
     assert cfg.api_id == 12345
     assert cfg.api_hash == "hash"
     assert cfg.output_channel == "@out"
@@ -85,10 +104,13 @@ def test_openai_config_defaults(monkeypatch):
 
 
 def test_openai_config_parses_env(monkeypatch):
-    cfg = _reload_config(monkeypatch, {
-        "OPENAI_API_KEY": "sk-test",
-        "OPENAI_MODEL": "gpt-4o",
-    }).openai_cfg()
+    cfg = _reload_config(
+        monkeypatch,
+        {
+            "OPENAI_API_KEY": "sk-test",
+            "OPENAI_MODEL": "gpt-4o",
+        },
+    ).openai_cfg()
     assert cfg.api_key == "sk-test"
     assert cfg.model == "gpt-4o"
 
@@ -101,10 +123,13 @@ def test_llm_defaults_to_openai(monkeypatch):
 
 
 def test_llm_minimax_preset(monkeypatch):
-    cfg = _reload_config(monkeypatch, {
-        "LLM_PROVIDER": "minimax",
-        "LLM_API_KEY": "minimax-key",
-    }).llm()
+    cfg = _reload_config(
+        monkeypatch,
+        {
+            "LLM_PROVIDER": "minimax",
+            "LLM_API_KEY": "minimax-key",
+        },
+    ).llm()
     assert cfg.provider == "minimax"
     assert cfg.api_key == "minimax-key"
     assert cfg.model == "MiniMax-M3"
@@ -112,10 +137,13 @@ def test_llm_minimax_preset(monkeypatch):
 
 
 def test_llm_glm_preset(monkeypatch):
-    cfg = _reload_config(monkeypatch, {
-        "LLM_PROVIDER": "glm",
-        "LLM_API_KEY": "glm-key",
-    }).llm()
+    cfg = _reload_config(
+        monkeypatch,
+        {
+            "LLM_PROVIDER": "glm",
+            "LLM_API_KEY": "glm-key",
+        },
+    ).llm()
     assert cfg.provider == "glm"
     assert cfg.api_key == "glm-key"
     assert cfg.model == "glm-4-flash"
@@ -129,30 +157,39 @@ def test_llm_unknown_provider_raises(monkeypatch):
 
 
 def test_llm_explicit_overrides(monkeypatch):
-    cfg = _reload_config(monkeypatch, {
-        "LLM_PROVIDER": "openai",
-        "LLM_BASE_URL": "https://my-proxy.example.com/v1",
-        "LLM_MODEL": "gpt-4o",
-        "LLM_API_KEY": "sk-x",
-    }).llm()
+    cfg = _reload_config(
+        monkeypatch,
+        {
+            "LLM_PROVIDER": "openai",
+            "LLM_BASE_URL": "https://my-proxy.example.com/v1",
+            "LLM_MODEL": "gpt-4o",
+            "LLM_API_KEY": "sk-x",
+        },
+    ).llm()
     assert cfg.base_url == "https://my-proxy.example.com/v1"
     assert cfg.model == "gpt-4o"
 
 
 def test_llm_falls_back_to_legacy_env(monkeypatch):
-    cfg = _reload_config(monkeypatch, {
-        "OPENAI_API_KEY": "sk-legacy",
-        "OPENAI_MODEL": "gpt-4",
-    }).llm()
+    cfg = _reload_config(
+        monkeypatch,
+        {
+            "OPENAI_API_KEY": "sk-legacy",
+            "OPENAI_MODEL": "gpt-4",
+        },
+    ).llm()
     assert cfg.api_key == "sk-legacy"
     assert cfg.model == "gpt-4"
 
 
 def test_llm_new_env_wins_over_legacy(monkeypatch):
-    cfg = _reload_config(monkeypatch, {
-        "LLM_API_KEY": "sk-new",
-        "OPENAI_API_KEY": "sk-legacy",
-    }).llm()
+    cfg = _reload_config(
+        monkeypatch,
+        {
+            "LLM_API_KEY": "sk-new",
+            "OPENAI_API_KEY": "sk-legacy",
+        },
+    ).llm()
     assert cfg.api_key == "sk-new"
 
 
@@ -168,10 +205,13 @@ def test_require_llm_passes_when_set_via_legacy(monkeypatch):
 
 
 def test_require_llm_passes_when_set_via_new(monkeypatch):
-    cfg = _reload_config(monkeypatch, {
-        "LLM_PROVIDER": "minimax",
-        "LLM_API_KEY": "minimax-key",
-    })
+    cfg = _reload_config(
+        monkeypatch,
+        {
+            "LLM_PROVIDER": "minimax",
+            "LLM_API_KEY": "minimax-key",
+        },
+    )
     cfg.require_llm()
 
 
@@ -183,18 +223,24 @@ def test_digest_config_defaults(monkeypatch):
 
 
 def test_digest_config_parses_env(monkeypatch):
-    cfg = _reload_config(monkeypatch, {
-        "DIGEST_HOUR_UTC": "7",
-        "DIGEST_MINUTE_UTC": "30",
-    }).digest()
+    cfg = _reload_config(
+        monkeypatch,
+        {
+            "DIGEST_HOUR_UTC": "7",
+            "DIGEST_MINUTE_UTC": "30",
+        },
+    ).digest()
     assert cfg.hour_utc == 7
     assert cfg.minute_utc == 30
 
 
 def test_digest_config_interval_hours(monkeypatch):
-    cfg = _reload_config(monkeypatch, {
-        "DIGEST_INTERVAL_HOURS": "1",
-    }).digest()
+    cfg = _reload_config(
+        monkeypatch,
+        {
+            "DIGEST_INTERVAL_HOURS": "1",
+        },
+    ).digest()
     assert cfg.interval_hours == 1
     # hour_utc / minute_utc still default — they're only used in cron mode.
     assert cfg.hour_utc == 9
@@ -202,63 +248,81 @@ def test_digest_config_interval_hours(monkeypatch):
 
 
 def test_require_secrets_passes_when_set(monkeypatch):
-    cfg = _reload_config(monkeypatch, {
-        "API_ID": "1",
-        "API_HASH": "h",
-        "OUTPUT_CHANNEL": "@out",
-        "MANUAL_REVIEW": "false",
-    })
+    cfg = _reload_config(
+        monkeypatch,
+        {
+            "API_ID": "1",
+            "API_HASH": "h",
+            "OUTPUT_CHANNEL": "@out",
+            "MANUAL_REVIEW": "false",
+        },
+    )
     cfg.require_secrets()  # no exception
 
 
 def test_require_secrets_raises_when_api_id_missing(monkeypatch):
-    cfg = _reload_config(monkeypatch, {
-        "API_HASH": "h",
-        "OUTPUT_CHANNEL": "@out",
-        "MANUAL_REVIEW": "false",
-    })
+    cfg = _reload_config(
+        monkeypatch,
+        {
+            "API_HASH": "h",
+            "OUTPUT_CHANNEL": "@out",
+            "MANUAL_REVIEW": "false",
+        },
+    )
     with pytest.raises(RuntimeError, match="API_ID"):
         cfg.require_secrets()
 
 
 def test_require_secrets_raises_when_api_hash_missing(monkeypatch):
-    cfg = _reload_config(monkeypatch, {
-        "API_ID": "1",
-        "OUTPUT_CHANNEL": "@out",
-        "MANUAL_REVIEW": "false",
-    })
+    cfg = _reload_config(
+        monkeypatch,
+        {
+            "API_ID": "1",
+            "OUTPUT_CHANNEL": "@out",
+            "MANUAL_REVIEW": "false",
+        },
+    )
     with pytest.raises(RuntimeError, match="API_HASH"):
         cfg.require_secrets()
 
 
 def test_require_secrets_raises_when_output_channel_missing(monkeypatch):
-    cfg = _reload_config(monkeypatch, {
-        "API_ID": "1",
-        "API_HASH": "h",
-        "MANUAL_REVIEW": "false",
-    })
+    cfg = _reload_config(
+        monkeypatch,
+        {
+            "API_ID": "1",
+            "API_HASH": "h",
+            "MANUAL_REVIEW": "false",
+        },
+    )
     with pytest.raises(RuntimeError, match="OUTPUT_CHANNEL"):
         cfg.require_secrets()
 
 
 def test_require_secrets_raises_when_manual_review_needs_channel(monkeypatch):
-    cfg = _reload_config(monkeypatch, {
-        "API_ID": "1",
-        "API_HASH": "h",
-        "OUTPUT_CHANNEL": "@out",
-        "MANUAL_REVIEW": "true",
-    })
+    cfg = _reload_config(
+        monkeypatch,
+        {
+            "API_ID": "1",
+            "API_HASH": "h",
+            "OUTPUT_CHANNEL": "@out",
+            "MANUAL_REVIEW": "true",
+        },
+    )
     with pytest.raises(RuntimeError, match="REVIEW_CHANNEL"):
         cfg.require_secrets()
 
 
 def test_require_secrets_skips_review_check_when_disabled(monkeypatch):
-    cfg = _reload_config(monkeypatch, {
-        "API_ID": "1",
-        "API_HASH": "h",
-        "OUTPUT_CHANNEL": "@out",
-        "MANUAL_REVIEW": "false",
-    })
+    cfg = _reload_config(
+        monkeypatch,
+        {
+            "API_ID": "1",
+            "API_HASH": "h",
+            "OUTPUT_CHANNEL": "@out",
+            "MANUAL_REVIEW": "false",
+        },
+    )
     cfg.require_secrets()  # no exception even with no REVIEW_CHANNEL
 
 

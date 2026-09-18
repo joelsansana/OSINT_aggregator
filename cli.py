@@ -53,17 +53,18 @@ MAX_LINE_LEN = 4096  # mirrors Telegram's per-message cap; prevents buffer abuse
 
 # ── command result ───────────────────────────────────────────────────
 
+
 @dataclass
 class CommandResult:
     ok: bool
     lines: list[str]
 
     @classmethod
-    def ok_msg(cls, *lines: str) -> "CommandResult":
+    def ok_msg(cls, *lines: str) -> CommandResult:
         return cls(ok=True, lines=list(lines))
 
     @classmethod
-    def err(cls, msg: str) -> "CommandResult":
+    def err(cls, msg: str) -> CommandResult:
         return cls(ok=False, lines=[msg])
 
 
@@ -80,6 +81,7 @@ def _wire(result: CommandResult) -> bytes:
 
 
 # ── command parsing + dispatch ──────────────────────────────────────
+
 
 def execute(line: str) -> CommandResult:
     """Parse and execute a single command line. Pure function over `db`."""
@@ -107,7 +109,9 @@ def execute(line: str) -> CommandResult:
     if verb == "status":
         db.init_db()
         with db.connect() as conn:
-            kw_total = conn.execute("SELECT COUNT(*) AS n FROM keywords").fetchone()["n"]
+            kw_total = conn.execute("SELECT COUNT(*) AS n FROM keywords").fetchone()[
+                "n"
+            ]
             kw_on = conn.execute(
                 "SELECT COUNT(*) AS n FROM keywords WHERE enabled = 1"
             ).fetchone()["n"]
@@ -117,7 +121,9 @@ def execute(line: str) -> CommandResult:
             tg_on = conn.execute(
                 "SELECT COUNT(*) AS n FROM telegram_sources WHERE enabled = 1"
             ).fetchone()["n"]
-            rss_total = conn.execute("SELECT COUNT(*) AS n FROM rss_feeds").fetchone()["n"]
+            rss_total = conn.execute("SELECT COUNT(*) AS n FROM rss_feeds").fetchone()[
+                "n"
+            ]
             rss_on = conn.execute(
                 "SELECT COUNT(*) AS n FROM rss_feeds WHERE enabled = 1"
             ).fetchone()["n"]
@@ -141,14 +147,10 @@ def execute(line: str) -> CommandResult:
     }
     handler = resource_map.get(verb)
     if handler is None:
-        return CommandResult.err(
-            f"unknown resource {verb!r}. Try: help"
-        )
+        return CommandResult.err(f"unknown resource {verb!r}. Try: help")
 
     if not rest:
-        return CommandResult.err(
-            f"{verb} requires a subcommand. Try: {verb} list"
-        )
+        return CommandResult.err(f"{verb} requires a subcommand. Try: {verb} list")
     sub = rest[0].lower()
     value = " ".join(rest[1:]).strip() if len(rest) > 1 else ""
     return handler(sub, value)
@@ -190,8 +192,7 @@ def _tg(sub: str, value: str) -> CommandResult:
                 "SELECT channel, enabled FROM telegram_sources ORDER BY added_at"
             ).fetchall()
         lines = [
-            f"@{r['channel']}" if r["enabled"] else f"-@{r['channel']}"
-            for r in rows
+            f"@{r['channel']}" if r["enabled"] else f"-@{r['channel']}" for r in rows
         ]
         return CommandResult.ok_msg(*lines)
     if not value:
@@ -248,6 +249,7 @@ def _rss(sub: str, value: str) -> CommandResult:
 
 # ── one-shot CLI ─────────────────────────────────────────────────────
 
+
 def run_oneshot(argv: list[str]) -> int:
     """Run a single command and print its result. Returns process exit code."""
     db.init_db()
@@ -268,6 +270,7 @@ def run_oneshot(argv: list[str]) -> int:
 
 
 # ── TCP server ───────────────────────────────────────────────────────
+
 
 class _ProtocolError(Exception):
     pass
@@ -346,6 +349,7 @@ async def serve(host: str, port: int, token: str) -> None:
 
 
 # ── entry point ──────────────────────────────────────────────────────
+
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
