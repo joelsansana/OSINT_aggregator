@@ -6,7 +6,7 @@ Monitors source Telegram channels and RSS feeds, filters by keyword, deduplicate
 
 See what this bot actually publishes in real time:
 
-**👉 [t.me/osint_ai_aggregator](https://t.me/osint_ai_aggregator)**
+**👉 [OSINT AI Aggregator](https://t.me/osint_ai_aggregator)**
 
 ## What it does
 
