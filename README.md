@@ -65,6 +65,53 @@ streamlit run dashboard.py
 
 On first run the bot seeds four default Telegram sources and four default RSS feeds into the DB. The dashboard picks them up immediately.
 
+## CLI
+
+`cli.py` provides two ways to manage sources, RSS feeds, and keywords without opening the dashboard.
+
+### One-shot (local)
+
+```bash
+python cli.py keyword add breaking
+python cli.py keyword list           # one per line, '-foo' = disabled
+python cli.py telegram add newchan
+python cli.py telegram disable newchan
+python cli.py rss add https://example.com/feed.xml
+python cli.py status                 # quick summary
+```
+
+Each command prints `OK` or `ERR: <message>` and exits 0 / 1. No authentication — runs against the same SQLite file the bot and dashboard share, so changes apply within ~60s on the next poll cycle.
+
+### Server (networked)
+
+```bash
+python cli.py serve          # listens on CLI_HOST:CLI_PORT (default 127.0.0.1:8765)
+```
+
+Speaks a line-based TCP REPL: the first line from a client must be `CLI_TOKEN`; subsequent lines are commands. Designed for `nc`, SSH-tunneled remote use, or scripting:
+
+```
+$ nc 127.0.0.1 8765
+your-token-from-env
+keyword add breaking
+OK
+keyword list
+OK
+breaking
+status
+OK
+posts_logged: 126
+keywords: 1 enabled (1 total)
+telegram_sources: 4 enabled (4 total)
+rss_feeds: 4 enabled (4 total)
+db: /home/joel/Projects/OSINT_aggregator/aggregator.db
+quit
+OK
+bye
+```
+
+Server responses are `OK` or `ERR: <msg>` on the first line, followed by data lines for `list` commands, then a blank line terminator. The server refuses to start without `CLI_TOKEN` set.
+
 ## Configuration
 
 All config is loaded from `.env` (see `.env.example` for the full list).
@@ -89,6 +136,8 @@ All config is loaded from `.env` (see `.env.example` for the full list).
 | `DIGEST_INTERVAL_HOURS` | If >0, run digest every N hours instead of daily; window becomes N hours too | `0` (daily) |
 | `DIGEST_ONLY` | If `true`, skip per-post Telegram sends; posts are buffered into the DB and surfaced only via the digest | `false` |
 | `DB_PATH` | Override the SQLite location | `<project>/aggregator.db` |
+| `CLI_HOST`, `CLI_PORT` | CLI server bind address | `127.0.0.1`, `8765` |
+| `CLI_TOKEN` | Required shared secret for `python cli.py serve` | required for serve mode |
 
 ### Keyword filter
 
@@ -155,6 +204,7 @@ pytest
 
 - `tests/test_db.py` — schema, WAL mode, seed behaviour, source/feed/keyword CRUD, `is_new` dedup, `posted_log` filters, `posts_for_window` (incl. `buffered` status), `digest_jobs` lifecycle, review-queue helpers (`list_pending_review`, `mark_review_action`), cross-connection visibility.
 - `tests/test_bot_helpers.py` — `make_id`, `is_relevant` (incl. empty/multi-word keywords), `format_post` / `format_digest` (including truncation), `extract_post_id`.
+- `tests/test_cli.py` — command parsing for every resource/action, wire format, real socket round-trip against the TCP server (auth rejection, command echo, `quit`).
 - `tests/test_config.py` — env parsing, defaults, `require_secrets` happy / error paths, LLM provider selection (`openai` / `minimax` / `glm`), legacy `OPENAI_*` fallback behaviour.
 
 Streamlit pages and the Telegram network code aren't covered (would need `streamlit.testing` and Telethon mocks).
@@ -165,6 +215,7 @@ Streamlit pages and the Telegram network code aren't covered (would need `stream
 OSINT_aggregator/
 ├── osint_aggregator.py    # bot entry point
 ├── dashboard.py           # Streamlit entry point
+├── cli.py                 # one-shot CLI + TCP REPL server
 ├── db.py                  # SQLite schema + helpers (shared)
 ├── config.py              # .env loader + typed config dataclasses
 ├── requirements.txt       # runtime deps
@@ -175,13 +226,15 @@ OSINT_aggregator/
 │   ├── conftest.py
 │   ├── test_db.py
 │   ├── test_bot_helpers.py
-│   └── test_config.py
+│   ├── test_config.py
+│   └── test_cli.py
 └── aggregator.db          # created on first run (gitignored)
 ```
 
 ## Caveats
 
 - **Dashboard has no auth.** Run it on localhost or behind a reverse proxy. Don't expose it publicly.
+- **CLI server has no encryption.** Plain TCP, single shared token, no per-user accounts. Bind to `127.0.0.1` and tunnel over SSH if you need remote access. Anyone with the token can mutate sources/keywords.
 - **Single-instance only.** A `digest_jobs` row stuck in `running` after a bot crash will block new digests until manually cleared. For multi-instance deployment, add a startup sweep that marks stale `running` jobs as failed.
 - **Source validation is regex-only.** Telegram source names are checked against a simple format pattern; the bot logs an error at poll time if a channel is unreachable. If you want live `get_entity` validation in the dashboard, it would need to share the Telethon session with the bot.
 - **`posted_log` grows unbounded.** Add a retention job (e.g. `DELETE FROM posted_log WHERE sent_at < datetime('now', '-90 days')`) if disk space matters.

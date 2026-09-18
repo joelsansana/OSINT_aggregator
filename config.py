@@ -93,6 +93,13 @@ class DigestConfig:
     interval_hours: int  # 0 → daily cron at hour_utc:minute_utc; >0 → every N hours
 
 
+@dataclass(frozen=True)
+class CLIConfig:
+    host: str
+    port: int
+    token: str
+
+
 def telegram() -> TelegramConfig:
     return TelegramConfig(
         api_id=_int("API_ID", 0),
@@ -148,6 +155,19 @@ def digest() -> DigestConfig:
         hour_utc=_int("DIGEST_HOUR_UTC", 9),
         minute_utc=_int("DIGEST_MINUTE_UTC", 0),
         interval_hours=_int("DIGEST_INTERVAL_HOURS", 0),
+    )
+
+
+def cli() -> CLIConfig:
+    """
+    CLI server config. The token is required for `python cli.py serve` —
+    the server refuses to start without it. One-shot `python cli.py …`
+    invocations don't authenticate against the token (they run locally).
+    """
+    return CLIConfig(
+        host=os.getenv("CLI_HOST", "127.0.0.1"),
+        port=_int("CLI_PORT", 8765),
+        token=os.getenv("CLI_TOKEN", ""),
     )
 
 
