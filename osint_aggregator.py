@@ -60,6 +60,8 @@ DIGEST_MIN_POSTS = 3
 # resolve the original post without parsing free-form text.
 POST_ID_MARKER = "POST_ID:"
 
+_THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
 # ─────────────────────────────────────────────
 # UTILITIES
 # ─────────────────────────────────────────────
@@ -98,6 +100,12 @@ def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"
+
+
+def _strip_thinking(text: str) -> str:
+    """Remove any <think>...</think> reasoning block a model may emit
+    inline in its response content (safety net even with thinking disabled)."""
+    return _THINK_TAG_RE.sub("", text).strip()
 
 
 def format_post(text: str, source: str) -> str:
@@ -479,17 +487,20 @@ def _build_llm_client() -> OpenAI:
 def _summarise_sync(posts: list, day: str) -> str:
     cfg = config.llm()
     client = _build_llm_client()
+
     bullet_lines = []
     for p in posts:
         snippet = (p["text"] or "").strip()
         if len(snippet) > 500:
             snippet = snippet[:500].rstrip() + "…"
         bullet_lines.append(f"- [{p['source']}] {snippet}")
+
     user_msg = (
         f"Date: {day}\n\n"
         f"Posts collected (most recent first is NOT guaranteed; treat as a set):\n"
         + "\n".join(bullet_lines)
     )
+
     response = client.chat.completions.create(
         model=cfg.model,
         messages=[
@@ -497,8 +508,11 @@ def _summarise_sync(posts: list, day: str) -> str:
             {"role": "user", "content": user_msg},
         ],
         temperature=0.3,
+        extra_body={"thinking": {"type": "disabled"}},   # ← Option 1: added here
     )
-    return response.choices[0].message.content or ""
+
+    raw = response.choices[0].message.content or ""
+    return _strip_thinking(raw)                            # ← regex strip applied here
 
 
 async def generate_digest(client: TelegramClient, *, day: str | None = None) -> bool:
