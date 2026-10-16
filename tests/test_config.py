@@ -146,8 +146,8 @@ def test_llm_glm_preset(monkeypatch):
     ).llm()
     assert cfg.provider == "glm"
     assert cfg.api_key == "glm-key"
-    assert cfg.model == "glm-4-flash"
-    assert cfg.base_url == "https://open.bigmodel.cn/api/paas/v4/"
+    assert cfg.model == "glm-5.3-flash"
+    assert cfg.base_url == "https://api.z.ai/api/coding/paas/v4/"
 
 
 def test_llm_unknown_provider_raises(monkeypatch):

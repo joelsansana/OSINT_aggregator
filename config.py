@@ -82,7 +82,7 @@ OpenAIConfig = LLMConfig
 _LLM_PROVIDERS: dict[str, tuple[str, str]] = {
     "openai": ("https://api.openai.com/v1", "gpt-4o-mini"),
     "minimax": ("https://api.minimax.io/v1", "MiniMax-M3"),
-    "glm": ("https://open.bigmodel.cn/api/paas/v4/", "glm-4-flash"),
+    "glm": ("https://api.z.ai/api/coding/paas/v4/", "glm-5.3-flash"),
 }
 
 
